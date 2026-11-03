@@ -147,7 +147,9 @@ if (modDir === '--lookup') { // debug: node tools/port-patches.mjs <old> <new> -
 const mod = JSON.parse(readFileSync(join(modDir, 'mod.json'), 'utf8'));
 const report = [], globalMap = {};
 const cache = {};
-for (const file of mod.patches) {
+// A format-2 mod may have no patches. Its page scripts are not ported: they read the game's page, not its minified
+// code (check them by hand on the new build).
+for (const file of mod.patches || []) {
   const patch = JSON.parse(readFileSync(join(modDir, file), 'utf8'));
   const O = (cache[`o${patch.bundle}`] ||= bundle(oldB, patch.bundle)), N = (cache[`n${patch.bundle}`] ||= bundle(newB, patch.bundle));
   const edits = [], notes = [];

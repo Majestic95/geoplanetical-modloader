@@ -2,7 +2,7 @@
 // single executable (node --experimental-sea-config, then postject into a copy of this node.exe, marked as a windowed
 // program), and lays out <out>/<name>/ with the executable, a mods folder and the README, then zips it.
 // By default the package holds the loader alone (an empty mods folder). A mod author can ship a ready-to-play pack
-// with their mods inside (mod.json and patch files only, checked with the launcher's own strict loader).
+// with their mods inside (mod.json, patch files and page scripts only, checked with the launcher's own strict loader).
 // Usage: node launcher/package.mjs [--mods <dir>] [--mod <id> ...] [--name <folder>] [--readme <file>] [--out <dir>]
 //   --mods    the folder holding the mod folders to include (all of them unless --mod names some)
 //   --mod     include only these mods (from --mods, default mods/ in the current folder)
@@ -91,15 +91,16 @@ run(process.execPath, [join(ROOT, 'node_modules', 'postject', 'dist', 'cli.js'),
   writeFileSync(exe, img);
 }
 
-// 3. The mods folder (with its README, and the mods if any: data only), the README and the license.
+// 3. The mods folder (with its README, and the mods if any: mod.json, patch files and page scripts only), the README and
+// the license.
 mkdirSync(join(OUT, 'mods'), { recursive: true });
 copyFileSync(join(ROOT, 'launcher', 'mods-README.txt'), join(OUT, 'mods', 'README.txt'));
 for (const m of mods) {
   const dst = join(OUT, 'mods', m.id);
-  mkdirSync(join(dst, 'patches'), { recursive: true });
+  mkdirSync(dst, { recursive: true });
   copyFileSync(join(m.dir, 'mod.json'), join(dst, 'mod.json'));
   const manifest = JSON.parse(readFileSync(join(m.dir, 'mod.json'), 'utf8'));
-  for (const rel of manifest.patches) { // patches may sit in sub-folders of the mod
+  for (const rel of [...(manifest.patches || []), ...(manifest.scripts || [])]) { // either may sit in sub-folders of the mod
     mkdirSync(dirname(join(dst, rel)), { recursive: true });
     copyFileSync(join(m.dir, rel), join(dst, rel));
   }

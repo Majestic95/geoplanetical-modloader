@@ -57,6 +57,9 @@ function main(argv) {
   if (!mods.length) throw new Error(`no mods in ${modsDir}`);
   const dir = join(WORKSPACE, 'dist', build);
   mkdirSync(dir, { recursive: true });
+  for (const m of mods.filter(x => x.scripts.length)) {
+    console.log(`${m.id}: ${m.scripts.length} page script(s), checked to parse; they run as they are (nothing to build)`);
+  }
   for (const [bundle, r] of buildAll(build, mods)) {
     const file = join(dir, bundle);
     writeFileSync(file, r.text);

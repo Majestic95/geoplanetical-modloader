@@ -178,10 +178,12 @@ export default String.raw`<!doctype html>
       banner('bad', 'The mods could NOT be confirmed active in part of the game (see Details below). This session may be playing the unmodded game: close the game without saving, and report it with the log.');
     } else if (s.phase === 'playing') {
       play.disabled = true; play.textContent = 'Game running'; pn.textContent = '';
-      banner('ok', (s.message ? s.message + ' ' : '') + 'The game runs with the mods. You can minimise or close this window: the loader keeps the mods active in the background until you quit the game. Saves made now need the mods to load correctly.');
+      banner(s.warning ? 'warn' : 'ok', (s.message ? s.message + ' ' : '') + 'The game runs with the mods. ' +
+        (s.warning ? 'A mod\u2019s page script failed or did not run (see Details below): what that mod shows on screen may be missing; the game itself is unaffected. ' : '') +
+        'You can minimise or close this window: the loader keeps the mods active in the background until you quit the game. Saves made now need the mods to load correctly.');
     } else {
       play.disabled = true; play.textContent = 'Session over'; pn.textContent = 'You can close the loader.';
-      banner(s.problem ? 'bad' : 'ok', s.message);
+      banner(s.problem ? 'bad' : s.warning ? 'warn' : 'ok', s.message);
     }
 
     // Log
@@ -210,6 +212,7 @@ export default String.raw`<!doctype html>
       head.appendChild(sw);
       card.appendChild(head);
       if (!m.fits) card.appendChild(el('div', 'mod-note', 'Made for game build ' + m.builds.join(', ') + (s.game ? '; your game is ' + s.game.build : '') + '. The game has updated: wait for an updated version of this mod.'));
+      if (m.scripts) card.appendChild(el('div', 'mod-note', 'Also runs its own script in the game\u2019s window.'));
       if (m.requires.length) {
         var needs = m.requires.map(function (id) {
           var r = s.mods.filter(function (o) { return o.id === id; })[0];

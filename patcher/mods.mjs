@@ -1,19 +1,30 @@
-// Mod loader: reads each mods/<folder>/mod.json and its patch files, all plain data. Strict: an unknown or missing field is
-// an error naming the file, so a typo never silently drops an edit. Nothing here executes mod code.
+// Mod loader: reads each mods/<folder>/mod.json, its patch files (plain data) and its page scripts. Strict: an unknown or
+// missing field is an error naming the file, so a typo never silently drops an edit. Nothing here executes mod code
+// (a page script is only parsed).
 // The format is specified for mod authors in docs/mod-format.md; keep the two in step.
 //
 // mod.json   { id, name, version, description, builds: [buildId], patches: ["patches/<file>.json", ...],
-//              format?: 1, author?, requires?: [modId], changes?: [entry, ...] }  (changes shown by the launcher),
-//              each entry a change ("one or two plain sentences") or a group of them: { group: "Heading", items: [...] }
+//              format?: 1 | 2, author?, requires?: [modId], changes?: [entry, ...], scripts?: ["<file>.js", ...] }
+//              (changes shown by the launcher), each entry a change ("one or two plain sentences") or a group of them:
+//              { group: "Heading", items: [...] }. scripts needs format 2; with scripts, format 2 may leave out patches.
 // patch file { id, finding?, effect, bundle, edits: [{ anchor, find, replace, near?, determinismOk? }] }
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+// Loaded:    { ...mod.json, dir, patches: [patch file, ...], scripts: [{ path, text }] } (both lists always present)
+import { readFileSync, readdirSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
+import { Script } from 'node:vm';
+import { wrap } from './page-script.mjs';
 
 // The mod format this loader reads. A mod declares a higher one only when it uses fields added later; this loader
 // then lists it as needing a newer loader instead of rejecting a field it does not know.
-export const FORMAT = 1;
-const MOD_KEYS = ['id', 'name', 'version', 'description', 'builds', 'patches'];
-const MOD_OPTIONAL = ['changes', 'format', 'author', 'requires'];
+// 1: patches (loader 0.3.0). 2: adds scripts for the game's page, patches optional with scripts (loader 0.4.0).
+export const FORMAT = 2;
+const MOD_KEYS = ['id', 'name', 'version', 'description', 'builds'];
+const MOD_OPTIONAL = ['patches', 'changes', 'format', 'author', 'requires', 'scripts'];
+// Page scripts: per file and per mod, and how a script path is written (plain segments, no "." or "..").
+const MAX_SCRIPT = 2 * 1024 * 1024;
+const MAX_SCRIPTS = 20;
+const MAX_SCRIPT_BYTES = 4 * 1024 * 1024;
+const SCRIPT_PATH = /^[A-Za-z0-9_][A-Za-z0-9_.-]*(\/[A-Za-z0-9_][A-Za-z0-9_.-]*)*\.js$/;
 const PATCH_KEYS = ['id', 'effect', 'bundle', 'edits'];
 const PATCH_OPTIONAL = ['finding'];
 const EDIT_REQUIRED = ['anchor', 'find', 'replace'];
@@ -73,6 +84,11 @@ function loadMod(dir) {
     }
   }
   exactKeys(m, MOD_KEYS, MOD_OPTIONAL, file);
+  if ('scripts' in m && (m.format ?? 1) < 2) throw new Error(`${file}: scripts need mod format 2: add "format": 2`);
+  // patches is required, as in format 1, unless a format-2 mod has scripts instead.
+  if (!('patches' in m) && !('scripts' in m)) {
+    throw new Error(`${file}: missing field "patches"${(m.format ?? 1) >= 2 ? ' (a format-2 mod may have "scripts" instead)' : ''}`);
+  }
   const text = c => typeof c === 'string' && c.trim();
   const entry = c => text(c) || (c && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).sort().join() === 'group,items' &&
     text(c.group) && Array.isArray(c.items) && c.items.length && c.items.every(text));
@@ -91,9 +107,9 @@ function loadMod(dir) {
   if (!Array.isArray(m.builds) || !m.builds.length || !m.builds.every(b => typeof b === 'string' && /^\d+$/.test(b))) {
     throw new Error(`${file}: builds must list Steam build ids`);
   }
-  if (!Array.isArray(m.patches) || !m.patches.length) throw new Error(`${file}: patches must be a non-empty array`);
+  if ('patches' in m && (!Array.isArray(m.patches) || !m.patches.length)) throw new Error(`${file}: patches must be a non-empty array`);
   const ids = new Set();
-  const patches = m.patches.map(rel => {
+  const patches = (m.patches || []).map(rel => {
     nonEmpty(rel, `${file} patches[]`);
     const path = resolve(dir, rel);
     if (!path.startsWith(resolve(dir) + sep)) throw new Error(`${file}: patch path "${rel}" leaves the mod folder`);
@@ -102,7 +118,51 @@ function loadMod(dir) {
     ids.add(p.id);
     return p;
   });
-  return { ...m, dir, patches };
+  let scripts = [];
+  if ('scripts' in m) {
+    if (!Array.isArray(m.scripts) || !m.scripts.length) throw new Error(`${file}: scripts must be a non-empty array`);
+    if (m.scripts.length > MAX_SCRIPTS) throw new Error(`${file}: more than ${MAX_SCRIPTS} scripts`);
+    for (const rel of m.scripts) {
+      if (typeof rel !== 'string' || !SCRIPT_PATH.test(rel)) {
+        throw new Error(`${file}: script path ${shown(rel)} must be a .js file path of letters, digits, _ . - and / ` +
+          '(each folder and file name starting with a letter, digit or _)');
+      }
+    }
+    // Windows does not tell A.js from a.js: one file listed twice would run twice.
+    if (new Set(m.scripts.map(r => r.toLowerCase())).size !== m.scripts.length) throw new Error(`${file}: scripts lists a file twice`);
+    let bytes = 0;
+    scripts = m.scripts.map(rel => {
+      const text = loadScript(dir, rel, `${m.id}/${rel}`);
+      bytes += Buffer.byteLength(text);
+      if (bytes > MAX_SCRIPT_BYTES) throw new Error(`${file}: the scripts are larger than ${MAX_SCRIPT_BYTES / 1024 / 1024} MB together`);
+      // The script inside the function it runs as, exactly as the page is sent it (patcher/page-script.mjs). Text that
+      // parses there is balanced, so even one that closes that function early stays inside the loader's guard (in the
+      // top frame, once per page load, in its own world).
+      try { new Script(wrap(text), { filename: `${m.id}/${rel}` }); } catch (e) {
+        throw new Error(`${m.id}/${rel}: does not parse as a script: ${e.message}`);
+      }
+      return { path: rel, text };
+    });
+  }
+  return { ...m, dir, patches, scripts };
+}
+
+// A value quoted in a message, anything outside printable ASCII escaped (no line breaks of its own in a message).
+const shown = v => JSON.stringify(v).replace(/[^\x20-\x7e]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+
+// A page script's text: a file inside the mod folder (also after following links) of at most MAX_SCRIPT bytes of
+// UTF-8. Read here; parsed by the caller; never run.
+function loadScript(dir, rel, where) {
+  const path = resolve(dir, rel);
+  let real;
+  try { real = realpathSync(path); } catch (e) { throw new Error(`${where}: ${e.message}`); }
+  if (!real.startsWith(realpathSync(dir) + sep)) throw new Error(`${where}: the file is outside the mod folder (a link)`);
+  if (statSync(real).size > MAX_SCRIPT) throw new Error(`${where}: larger than ${MAX_SCRIPT / 1024 / 1024} MB`);
+  const bytes = readFileSync(real);
+  if (bytes.length > MAX_SCRIPT) throw new Error(`${where}: larger than ${MAX_SCRIPT / 1024 / 1024} MB`); // changed while read
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch (e) {
+    throw new Error(`${where}: ${e.code === 'ERR_ENCODING_INVALID_ENCODED_DATA' ? 'not UTF-8 text' : e.message}`);
+  }
 }
 
 // A mod's changelog as groups: [{ group: heading or null, items: [sentence, ...] }]. Loose sentences keep their place

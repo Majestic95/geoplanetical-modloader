@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (not yet released)
 
 - Add mods from the window: drop a mod's zip file or folder onto it, or click **Add mod...** and choose the zip (or
   the `mod.json` inside a folder). The loader checks the whole mod with its strict reader before anything in the
@@ -10,7 +10,15 @@
   of the files inside it, of a repository holding the mod, or of several mods at once all work. See
   [docs/authoring.md](docs/authoring.md#7-release).
 - **Refresh** button: shows mods added to the `mods` folder by hand without restarting the loader.
-- Mod format unchanged (format 1).
+- Mod format 2: page scripts ([docs/mod-format.md](docs/mod-format.md#page-scripts)). A mod can list `scripts`, `.js`
+  files that change what the game's window shows; such a mod declares `"format": 2` and may leave out `patches`.
+  Page scripts are walled off from the game's code: each mod's run in an isolated world of their own, with the page's
+  elements but not the game's objects or its functions for saves, settings, files and the Workshop. The loader runs
+  each script in the page's top frame only, once per page load (at the start of every page load and once in the page
+  already open), as the body of a function so its declarations stay private, and reports a script that throws while
+  it starts as an amber warning (the game and its simulation are unaffected). The list shows which mods run a page
+  script. Loader 0.3.0 lists a format-2 mod as needing a newer loader; format-1 mods load as before and their patched
+  code is unchanged.
 
 ## 0.3.0 (2026-11-02)
 

@@ -11,8 +11,9 @@ import { buildBundle } from '../patcher/patch-engine.mjs';
 import { requirementProblem, orderMods } from '../patcher/mods.mjs';
 import { findGame, originalBundle } from '../patcher/game.mjs';
 import { launchAndServe } from '../patcher/runner.mjs';
+import { PAGE } from '../patcher/session.mjs';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 export const PRODUCT = 'Geoplanetical Mod Loader';
 // Packaged: everything sits beside the executable. Development: the repository root (mods/ is the repo's).
 export const BASE = isSea() ? dirname(process.execPath) : join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -21,12 +22,12 @@ const SETTINGS = join(BASE, 'launcher-settings.json');
 export const LOG = join(BASE, 'launcher.log');
 
 // A log that writes launcher.log and passes each line to the front end's `show(line)`. Messages can carry text from a
-// mod (its name, a file name): control characters are replaced and further lines indented, so no message can pass
-// for a line of its own.
+// mod (its name, a file name, a page script's error): control and direction characters are replaced and further lines
+// indented, so no message can pass for a line of its own.
 export function makeLog(show) {
   return text => {
     // eslint-disable-next-line no-control-regex
-    const msg = String(text).replace(/\r?\n/g, '\n    ').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, '?');
+    const msg = String(text).replace(/\r?\n/g, '\n    ').replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, '?');
     const line = `[${new Date().toISOString().slice(11, 19)}] ${msg}`;
     try { show(line); } catch { /* the front end may be gone */ }
     try { appendFileSync(LOG, `[${new Date().toISOString()}] ${msg}\n`); } catch { /* the log is a convenience */ }
@@ -78,11 +79,14 @@ export function launchBlocker(settings, game) {
   return null;
 }
 
-// Builds the chosen mods into the game's code and checks it compiles: { payloads } or { error }.
+// Builds the chosen mods into the game's code and checks it compiles: { payloads, scripts } or { error }. The page
+// scripts (already parsed when the mods were read) go in load order.
 export function buildMods(game, chosen, log) {
   log(`building ${chosen.map(m => `${m.name} ${m.version}`).join(', ')} for build ${game.build}`);
   log('read-only: the game files are read, never changed');
   const payloads = new Map();
+  const scripts = chosen.flatMap(m => m.scripts.map(s => ({ mod: m.id, path: s.path, text: s.text })));
+  if (scripts.length) log(`page: ${scripts.length} script(s) ready (${scripts.map(s => `${s.mod}/${s.path}`).join(', ')})`);
   try {
     for (const bundle of [...new Set(chosen.flatMap(m => m.patches.map(p => p.bundle)))].sort()) {
       const r = buildBundle(originalBundle(game, bundle), chosen, { build: game.build, bundle });
@@ -95,25 +99,34 @@ export function buildMods(game, chosen, log) {
     log(`the mods could not be applied: ${e.message}`);
     return { error: `The mods could not be applied: ${e.message}. Nothing was started. Switch the named mod off, or check for an updated version of it.` };
   }
-  return { payloads };
+  return { payloads, scripts };
 }
 
-// Starts the game through Steam and serves it until it closes. Resolves { problem, message } at the end of the session;
-// onSwap({ bundle, status }) also reports each worker swap as it happens.
-export async function playSession({ steam, port, payloads, chosen, log, onSwap: report = () => {} }) {
+// Starts the game through Steam and serves it until it closes. Resolves { problem, warning, message } at the end of the
+// session; onSwap({ bundle, status }) also reports each worker swap and the page scripts (bundle PAGE) as they happen.
+// A page script runs beside the game's own code, so one that fails is a warning (what a mod shows on screen may be
+// missing), not a problem (the game possibly unmodded). A script that threw stays a warning for the session; one that
+// did not run stops being one once a later page load runs it.
+export async function playSession({ steam, port, payloads, scripts = [], chosen, log, onSwap: report = () => {} }) {
   log(`starting Geoplanetical through Steam with ${chosen.map(m => m.name).join(', ')}`);
-  let problem = false;
+  let problem = false, pageFailed = false, pageMissing = false;
   const confirmed = new Set();
-  const onSwap = ({ bundle, status }) => {
+  const onSwap = ({ bundle, status, detail }) => {
     try { report({ bundle, status }); } catch { /* the front end's display only */ }
+    if (bundle === PAGE) pageMissing = status === 'original';
     if (status === 'patched') { confirmed.add(bundle); return log(`mods active (${bundle})`); }
+    if (bundle === PAGE) {
+      if (status === 'broken') pageFailed = true;
+      return log(`A PAGE SCRIPT ${status === 'broken' ? 'FAILED' : 'DID NOT RUN'}: ${detail || status}. The game itself and its ` +
+        'simulation are unaffected; what the mod shows on screen may be missing. Report it to the mod\'s author, with launcher.log.');
+    }
     problem = true;
     if (status === 'unverified') log(`warning: the mods started in ${bundle} but could not be confirmed as running.`);
     else if (status === 'broken') log(`THE MODS FAILED in ${bundle}: the game will not work this session. Close the game and report this, with launcher.log.`);
     else log(`THE MODS ARE NOT ACTIVE in ${bundle} (${status}): this session plays the unmodded game. Close the game and report this, with launcher.log.`);
   };
   await new Promise(resolve => {
-    launchAndServe({ steam, port, payloads, log, onSwap, onExit: code => { if (code) problem = true; resolve(); } })
+    launchAndServe({ steam, port, payloads, scripts, log, onSwap, onExit: code => { if (code) problem = true; resolve(); } })
       .then(() => log('attached to the game; waiting for the mods to start inside it'), e => {
         log(`could not start the game with the mods: ${e.message}. If the game still opens, it is running WITHOUT the mods: close it.`);
         problem = true; resolve();
@@ -124,10 +137,18 @@ export async function playSession({ steam, port, payloads, chosen, log, onSwap: 
     problem = true;
     log(`the mods were never confirmed active in ${missing.join(', ')}: that session most likely ran the UNMODDED game.`);
   }
+  if (scripts.length && !confirmed.has(PAGE) && !pageFailed) {
+    pageMissing = true;
+    log('the page scripts were never confirmed running: what those mods show on screen was most likely missing.');
+  }
+  const warning = pageFailed || pageMissing;
   return {
     problem,
+    warning,
     message: problem
       ? 'Something went wrong (see the log). Saves from that session may be unmodded. launcher.log beside this program has the details.'
-      : 'The game has closed. The mods were active the whole session.',
+      : warning
+        ? 'The game has closed. The mods were active, but a page script failed or did not run, so what a mod shows on screen may have been missing (see the log).'
+        : 'The game has closed. The mods were active the whole session.',
   };
 }

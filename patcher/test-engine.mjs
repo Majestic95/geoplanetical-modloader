@@ -1,10 +1,10 @@
 // Unit checks for patch-engine.mjs, mods.mjs and the launcher's mod choice (launcher/core.mjs chooseMods).
 // Usage: node patcher/test-engine.mjs
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyPatches, buildBundle, hazardsIn, HANDLER_POSTLUDE, MARKER, HANDLER_MARKER } from './patch-engine.mjs';
-import { loadMods, orderMods, requirementProblem } from './mods.mjs';
+import { loadMods, orderMods, requirementProblem, FORMAT } from './mods.mjs';
 import { chooseMods } from '../launcher/core.mjs';
 
 let failures = 0;
@@ -120,14 +120,83 @@ try {
   writeMod('fmt1', { ...goodMod('fmt1'), format: 1, author: 'Someone' }, noFinding);
   expect('format 1, author and a patch without finding load', () => loadMods(root, { only: ['fmt1'] })[0],
     { check: m => m.author === 'Someone' && m.format === 1 && !('finding' in m.patches[0]) });
-  writeMod('fmt2', { ...goodMod('fmt2'), format: 2, newField: true }, goodPatch);
+  writeMod('fmt2', { ...goodMod('fmt2'), format: FORMAT + 1, newField: true }, goodPatch);
   expect('a newer format asks for a newer loader before checking fields', () => loadMods(root, { only: ['fmt2'] }),
-    { throws: /needs a newer Geoplanetical Mod Loader \(mod format 2; this loader reads format 1\)/ });
+    { throws: new RegExp(`needs a newer Geoplanetical Mod Loader \\(mod format ${FORMAT + 1}; this loader reads format ${FORMAT}\\)`) });
   writeMod('fmt2', { ...goodMod('fmt2'), format: '1' }, goodPatch);
   expect('format must be a number', () => loadMods(root, { only: ['fmt2'] }), { throws: /format must be a whole number/ });
   writeMod('fmt2', { ...goodMod('fmt2'), author: '' }, goodPatch);
   expect('author must not be empty', () => loadMods(root, { only: ['fmt2'] }), { throws: /author: must be a non-empty string/ });
   rmSync(join(root, 'fmt2'), { recursive: true });
+
+  // Format 2: page scripts.
+  const script = (name, file, text) => { mkdirSync(join(root, name, ...file.split('/').slice(0, -1)), { recursive: true }); writeFileSync(join(root, name, file), text); };
+  const { patches: _p, ...noPatches } = goodMod('x');
+  const scriptMod = (id, extra = {}) => ({ ...noPatches, id, format: 2, scripts: ['page/s.js'], ...extra });
+  const one = id => loadMods(root, { only: [id] })[0];
+  const fresh = (id, json, files = { 'page/s.js': 'window.__s = 1;' }, patch = null) => {
+    rmSync(join(root, id), { recursive: true, force: true });
+    writeMod(id, json, patch);
+    for (const [f, t] of Object.entries(files)) script(id, f, t);
+  };
+  fresh('sc-only', scriptMod('sc-only'));
+  expect('format 2: a mod with only scripts loads', () => one('sc-only'),
+    { check: m => m.patches.length === 0 && m.scripts.length === 1 && m.scripts[0].path === 'page/s.js' && m.scripts[0].text === 'window.__s = 1;' });
+  fresh('sc-both', scriptMod('sc-both', { patches: ['patches/p.json'] }), undefined, goodPatch);
+  expect('format 2: scripts and patches together', () => one('sc-both'), { check: m => m.patches.length === 1 && m.scripts.length === 1 });
+  fresh('sc-f1', { ...scriptMod('sc-f1'), format: 1 });
+  expect('scripts need format 2', () => one('sc-f1'), { throws: /scripts need mod format 2: add "format": 2/ });
+  fresh('sc-nof', (({ format, ...r }) => r)(scriptMod('sc-nof')));
+  expect('scripts without a format need format 2', () => one('sc-nof'), { throws: /scripts need mod format 2/ });
+  fresh('sc-none', { ...noPatches, id: 'sc-none', format: 2 }, {});
+  expect('format 2 still needs patches or scripts', () => one('sc-none'), { throws: /missing field "patches" \(a format-2 mod may have "scripts" instead\)$/ });
+  fresh('f1-none', { ...noPatches, id: 'f1-none' }, {});
+  expect('format 1: patches still required, same message', () => one('f1-none'), { throws: /mod\.json: missing field "patches"$/ });
+  fresh('sc-empty', scriptMod('sc-empty', { scripts: [] }));
+  expect('scripts must not be empty', () => one('sc-empty'), { throws: /scripts must be a non-empty array/ });
+  fresh('sc-twice', scriptMod('sc-twice', { scripts: ['page/s.js', 'page/s.js'] }));
+  expect('a script listed twice', () => one('sc-twice'), { throws: /scripts lists a file twice/ });
+  fresh('sc-case', scriptMod('sc-case', { scripts: ['page/s.js', 'Page/S.js'] }));
+  expect('a script listed twice in another case', () => one('sc-case'), { throws: /scripts lists a file twice/ });
+  // Paths are plain segments: nothing in one can leave the folder or end the comment it is written into.
+  for (const bad of ['../sc-only/page/s.js', 'page/../page/s.js', './page/s.js', '/page/s.js', 'page\\s.js', 'page//s.js', 'page/s.txt',
+    'page/s.js\n;evil()//x.js', 'page/s\u2028.js', 'page/s .js', 'C:/x.js', 'page/.s.js']) {
+    fresh('sc-path', scriptMod('sc-path', { scripts: [bad] }));
+    expect(`a script path is refused: ${JSON.stringify(bad)}`, () => one('sc-path'), { throws: /script path .* must be a \.js file path of letters/ });
+  }
+  fresh('sc-many', scriptMod('sc-many', { scripts: Array.from({ length: 21 }, (_, i) => `page/s${i}.js`) }));
+  expect('at most 20 scripts', () => one('sc-many'), { throws: /more than 20 scripts/ });
+  const mb15 = `//${'x'.repeat(1.5 * 1024 * 1024)}`;
+  fresh('sc-total', scriptMod('sc-total', { scripts: ['a.js', 'b.js', 'c.js'] }), { 'a.js': mb15, 'b.js': mb15, 'c.js': mb15 });
+  expect('at most 4 MB of scripts per mod', () => one('sc-total'), { throws: /scripts are larger than 4 MB together/ });
+  fresh('sc-link', scriptMod('sc-link', { scripts: ['out/s.js'] }), {});
+  mkdirSync(join(root, 'outside-folder'), { recursive: true });
+  writeFileSync(join(root, 'outside-folder', 's.js'), 'window.x = 1;');
+  symlinkSync(join(root, 'outside-folder'), join(root, 'sc-link', 'out'), 'junction');
+  expect('a script reached through a link outside the mod folder', () => one('sc-link'), { throws: /outside the mod folder \(a link\)/ });
+  fresh('sc-html', scriptMod('sc-html'), { 'page/s.js': '--> an HTML close comment, at the start\nwindow.x = 1;' });
+  expect('a script is checked as the page will run it (no leading line break)', () => one('sc-html'), { throws: /does not parse as a script/ });
+  fresh('sc-esc', scriptMod('sc-esc'), { 'page/s.js': '}).call(globalThis)}catch(e){}} window.everywhere = 1; if(0){try{(function(){' });
+  expect('a script that closes the wrapper early does not parse', () => one('sc-esc'), { throws: /does not parse as a script/ });
+  fresh('sc-ext', scriptMod('sc-ext', { scripts: ['page/s.txt'] }), { 'page/s.txt': 'x' });
+  expect('a script must be a .js file', () => one('sc-ext'), { throws: /must be a \.js file path/ });
+  fresh('sc-miss', scriptMod('sc-miss', { scripts: ['page/none.js'] }), {});
+  expect('a missing script is named', () => one('sc-miss'), { throws: /sc-miss\/page\/none\.js: ENOENT/ });
+  fresh('sc-syn', scriptMod('sc-syn'), { 'page/s.js': 'function (' });
+  expect('a script that does not parse lists the mod as broken', () => one('sc-syn'), { throws: /sc-syn\/page\/s\.js: does not parse as a script/ });
+  fresh('sc-utf', scriptMod('sc-utf'), { 'page/s.js': Buffer.from([0x2f, 0x2f, 0xff, 0xfe]) });
+  expect('a script must be UTF-8', () => one('sc-utf'), { throws: /not UTF-8 text/ });
+  fresh('sc-big', scriptMod('sc-big'), { 'page/s.js': `//${'x'.repeat(2 * 1024 * 1024)}` });
+  expect('a script over 2 MB', () => one('sc-big'), { throws: /larger than 2 MB/ });
+  fresh('sc-ret', scriptMod('sc-ret'), { 'page/s.js': '"use strict";\nif (window.top !== window) return;\nwindow.__s = 1;' });
+  expect('a script runs as a function body: top-level return and "use strict" are allowed', () => one('sc-ret').scripts.length, { check: n => n === 1 });
+  for (const id of ['sc-only', 'sc-both', 'sc-f1', 'sc-nof', 'sc-none', 'f1-none', 'sc-empty', 'sc-twice', 'sc-case', 'sc-path', 'sc-many',
+    'sc-total', 'sc-link', 'outside-folder', 'sc-html', 'sc-esc', 'sc-ext', 'sc-miss', 'sc-syn', 'sc-utf', 'sc-big', 'sc-ret']) {
+    rmSync(join(root, id), { recursive: true, force: true });
+  }
+  writeMod('f1-shape', goodMod('f1-shape'), goodPatch);
+  expect('format 1 mods load with an empty scripts list', () => one('f1-shape'), { check: m => Array.isArray(m.scripts) && !m.scripts.length && !('scripts' in JSON.parse(readFileSync(join(root, 'f1-shape', 'mod.json'), 'utf8'))) });
+  rmSync(join(root, 'f1-shape'), { recursive: true });
 
   // Requirements: validation, load order, missing requirements.
   const badReq = { 'req-self': ['req-self'], 'req-twice': ['ok-a', 'ok-a'], 'req-bad': ['Not An Id'] };

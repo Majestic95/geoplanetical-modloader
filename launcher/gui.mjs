@@ -12,6 +12,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { scanMods, changeGroups } from '../patcher/mods.mjs';
+import { PAGE as PAGE_SCRIPTS } from '../patcher/session.mjs';
 import { findGame, gameRunning, steamExe } from '../patcher/game.mjs';
 import {
   VERSION, PRODUCT, MODS, LOG, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
@@ -58,7 +59,8 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   let { mods, broken } = scanMods(MODS);
   // phase: ready (choose and start) | building | playing | ended (session over or dry run) ; message: the latest notice
   // or refusal ; notice: what the last action did when it succeeded (a mod added), until the next action
-  let phase = 'ready', message = null, notice = null, problem = false, lastSeen = Date.now(), browsing = false;
+  // problem: the mods may not be active in the game (red); warning: a page script failed, the game runs modded (amber)
+  let phase = 'ready', message = null, notice = null, problem = false, warning = false, lastSeen = Date.now(), browsing = false;
   let running = { at: 0, value: false };
   const gameIsRunning = () => {
     if (Date.now() - running.at > 3000) {
@@ -71,7 +73,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   if (!steam) log('Steam was not found on this PC');
 
   const state = () => ({
-    version: VERSION, dryRun, phase, message, notice, problem,
+    version: VERSION, dryRun, phase, message, notice, problem, warning,
     steamFound: !!steam,
     game: game && { dir: game.dir, build: game.build, updating: game.updating, targetBuild: game.targetBuild },
     savedDir: settings.gameDir || null,
@@ -79,7 +81,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     modsFolder: MODS,
     mods: mods.map(m => ({
       id: m.id, name: m.name, version: m.version, author: m.author || null, requires: m.requires || [],
-      builds: m.builds, changes: changeGroups(m),
+      builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length,
       fits: !!game && m.builds.includes(game.build), enabled: isEnabled(settings, m),
     })),
     broken: broken.map(b => ({ folder: b.folder, error: b.error })),
@@ -109,7 +111,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       return 'Could not tell whether Geoplanetical is already running. Close it if it is, then press Play again.';
     }
     if (running.value) return 'Geoplanetical is already running. Close it, then press Play again.';
-    phase = 'building'; problem = false; message = 'Building the mods into the game’s code…';
+    phase = 'building'; problem = false; warning = false; message = 'Building the mods into the game’s code…';
     setTimeout(async () => {
       try {
         const built = buildMods(game, chosen, log);
@@ -118,9 +120,15 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         if (dryRun) { log('dry run: everything checks out; the game was not started'); phase = 'ended'; message = 'Dry run: the mods were built and checked. The game was not started.'; return; }
         phase = 'playing'; message = 'Starting the game through Steam…';
         // A worker that does not take the mods is shown at once (problem), not only when the game closes.
-        const onSwap = ({ status }) => { if (status !== 'patched') problem = true; };
-        const end = await playSession({ steam, port, payloads: built.payloads, chosen, log, onSwap });
-        phase = 'ended'; problem = end.problem; message = end.message;
+        // Page scripts: a throw stays a warning for the session; "did not run" lasts until a later page load runs them.
+        let pageFailed = false;
+        const onSwap = ({ bundle, status }) => {
+          if (bundle !== PAGE_SCRIPTS) { if (status !== 'patched') problem = true; return; }
+          if (status === 'broken') pageFailed = true;
+          warning = pageFailed || status === 'original';
+        };
+        const end = await playSession({ steam, port, payloads: built.payloads, scripts: built.scripts, chosen, log, onSwap });
+        phase = 'ended'; problem = end.problem; warning = end.warning; message = end.message;
       } catch (e) {
         log(`error: ${e?.stack || e}`);
         problem = true; message = 'Something went wrong (see the log). If the game opened, it may be running WITHOUT the mods: close it.';

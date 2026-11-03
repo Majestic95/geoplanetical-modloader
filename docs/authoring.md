@@ -69,6 +69,18 @@ Create `mods/my-mod/mod.json` and a patch file as in [mod-format.md](mod-format.
 - keep the replacement deterministic (no time, randomness, page state or timers);
 - if the replacement calls game functions by their minified names, note them: they change with each build.
 
+### A page script instead (format 2)
+
+To change only what the screen shows (a label, a description, a tooltip), a page script is often simpler than a
+patch: it reads the game's page as it is and adds elements of its own, with no minified names to port. List it in
+`scripts`, set `"format": 2`, and follow [Page scripts](mod-format.md#page-scripts): it runs in the game's main page
+at the start of every page load, as the body of a function, walled off from the game's code: it works with the page's
+elements only, so anything it needs has to be readable from them. To find the elements to work with, inspect the
+game's page while it runs through `patcher/launch.mjs`: in Chrome (`chrome://inspect`) or Edge (`edge://inspect`), add
+`localhost:9333` (the launcher's debug port) to the network targets, then inspect the page `renderer/index.html`; in
+the console, pick your mod's context (`gpml:<your mod id>`) to see what your script sees. Page scripts are not ported by
+`tools/port-patches.mjs`: check them by hand on each new build.
+
 ## 5. Build and check
 
 From your workspace:
@@ -91,7 +103,8 @@ node <loader>/patcher/launch.mjs --mod my-mod
 ```
 
 This starts the game through Steam, applies the mod in memory and stays attached until the game closes; it prints
-whether each patched part of the game is confirmed to run your code. `--dry-run` does everything except start the
+whether each patched part of the game is confirmed to run your code, and whether your page scripts ran (on every page
+load; an error a script throws is in the game's developer tools console). `--dry-run` does everything except start the
 game, and `--unpatched` starts the game through the same path without mods, for comparison. You can also copy your
 mod folder into the `mods` folder of a packaged loader and use its window.
 
@@ -99,7 +112,7 @@ Test at least: a new game, a few months of play, save, quit, and load the save a
 
 ## 7. Release
 
-Zip your mod folder (`my-mod/` with `mod.json` and its patch files). Players drop the zip onto the loader's
+Zip your mod folder (`my-mod/` with `mod.json`, its patch files and page scripts). Players drop the zip onto the loader's
 window (or choose it with **Add mod...**), and the loader checks the mod and adds it; unzipping it into the `mods`
 folder by hand also works. Do not include extracted game files: a mod carries only the short pieces of game code in
 its `find` and `anchor` text.

@@ -13,10 +13,18 @@
 //   original          the swap was skipped before anything ran (compile error, oversized message): vanilla runs
 //   broken            the patched code threw part-way; the original was terminated too, so the worker is dead
 //   original-serving  the original's run was not terminated and replaced the patched handler
+//
+// Page scripts (mod format 2) go into the game page through the page session, each mod's in an isolated world of its
+// own (patcher/page-script.mjs): registered to run at the start of every later page load, and run once in the page
+// already open. They are reported like a bundle named PAGE when their state changes: patched (every script ran),
+// broken (a script threw while starting; the game's own code is untouched), original (one did not run).
 
 import { MARKER, HANDLER_MARKER } from './patch-engine.mjs';
+import { Script } from 'node:vm';
+import { WORLD, wrap, pageScriptSource, pageCheck } from './page-script.mjs';
 
 export const SIM = 'simulation-worker.bundle.js';
+export const PAGE = 'page';
 
 // Chromium's DevTools receive limit is believed to be 100 MiB per message; a larger evaluate would drop the socket.
 const MAX_MESSAGE_BYTES = 100 * 1024 * 1024;
@@ -49,9 +57,10 @@ async function servingStatus(cdp, sid) {
   return { status: v.handler !== 'function' ? 'unverified' : v.same ? 'patched' : 'original-serving', marker: v.marker };
 }
 
-// payloads: Map(bundle -> patched source text); empty for a baseline run. reattach: the game was already running
-// under this patcher; never reload the page (it would lose unsaved play), and report what running workers serve.
-export async function attachAndServe(cdp, { pageUrl, payloads, log, onSwap = () => {}, settleMs = 3000, reattach = false }) {
+// payloads: Map(bundle -> patched source text); empty for a baseline run. scripts: page scripts [{ mod, path, text }] in
+// load order; pageState: an object the caller keeps across re-attaches (servePage). reattach: the game was already
+// running under this patcher; never reload the page (it would lose unsaved play), and report what running workers serve.
+export async function attachAndServe(cdp, { pageUrl, payloads, scripts = [], pageState = {}, log, onSwap = () => {}, settleMs = 3000, reattach = false }) {
   const page = await waitFor('the game page', async () => {
     const { targetInfos } = await cdp.send('Target.getTargets');
     return targetInfos.find(t => t.type === 'page' && pageUrl.test(t.url)) || null;
@@ -171,6 +180,8 @@ export async function attachAndServe(cdp, { pageUrl, payloads, log, onSwap = () 
   }
   await cdp.send('Target.setAutoAttach', AUTO_ATTACH, pageSession);
   log(`watching workers for ${[...payloads.keys()].join(', ') || 'nothing (baseline)'}`);
+  // After the workers are watched, so a worker starting now is not missed.
+  if (scripts.length) await servePage(cdp, pageSession, scripts, log, onSwap, reattach, pageState);
 
   await sleep(settleMs);
   if (!reattach && staleWorker && !results.length) {
@@ -179,4 +190,94 @@ export async function attachAndServe(cdp, { pageUrl, payloads, log, onSwap = () 
     await cdp.send('Page.reload', { ignoreCache: true }, pageSession);
   }
   return { pageSession, results };
+}
+
+// Text from the page (a script's error) goes to the log: control and direction characters out, and kept short.
+// eslint-disable-next-line no-control-regex
+const clean = s => String(s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, '?').slice(0, 300);
+
+// Page scripts: the check is set up first (it waits until the first injection is done), then each script is registered
+// for every later page load in its mod's world and run in the page already open. The state is reported when it
+// changes: at the first check, and after page loads. `pageState` outlives one attach (patcher/runner.mjs): for one page
+// load (its loaderId, from DevTools, which the page cannot change) it holds the scripts known to have run there, after
+// the loader ran them or a check saw them. A re-attach into that page load does not run those again, whether or not the
+// new session sees the same isolated world as the old one.
+async function servePage(cdp, pageSession, scripts, log, onSwap, reattach, pageState) {
+  const mods = [...new Set(scripts.map(s => s.mod))];
+  const when = reattach ? 're-attach' : 'attach';
+  const name = s => `${s.mod}/${s.path}`;
+  let ready = false, last = null;
+  const report = (status, detail, at) => {
+    if (`${status}|${detail}` === last) return;
+    last = `${status}|${detail}`;
+    log(`page scripts (${at}): ${status === 'patched' ? `${scripts.length} running` : status.toUpperCase()}${detail ? `: ${detail}` : ''}`);
+    onSwap({ bundle: PAGE, status, marker: null, detail, sessionId: pageSession });
+  };
+  const ran = (loaderId, names) => {
+    if (!loaderId) return;
+    if (pageState.loaderId !== loaderId) { pageState.loaderId = loaderId; pageState.ran = new Set(); }
+    for (const n of names) pageState.ran.add(n);
+  };
+  const ranHere = (frame, s) => reattach && !!frame.loaderId && pageState.loaderId === frame.loaderId && pageState.ran.has(name(s));
+  const mainFrame = async () => (await cdp.send('Page.getFrameTree', {}, pageSession)).frameTree.frame;
+  const inWorld = async (frame, mod, expression) => {
+    const { executionContextId } = await cdp.send('Page.createIsolatedWorld', { frameId: frame.id, worldName: WORLD(mod) }, pageSession);
+    return cdp.send('Runtime.evaluate', { expression, contextId: executionContextId, returnByValue: true }, pageSession);
+  };
+  const check = async at => {
+    try {
+      const frame = await mainFrame();
+      // Whether this is the game page is decided here, from DevTools, not from an answer a mod's world gives.
+      if (!/\/renderer\/index\.html$/i.test(new URL(frame.url).pathname)) return;
+      const failed = [], missing = [], seen = [], trusted = [];
+      for (const mod of mods) {
+        const mine = scripts.filter(s => s.mod === mod);
+        const res = await inWorld(frame, mod, pageCheck(mod, mine.map(s => s.path)));
+        // The answer comes from a world mod scripts share: checked before it is trusted.
+        const v = JSON.parse(typeof res.result?.value === 'string' ? res.result.value : '"bad"');
+        if (!Array.isArray(v) || v.length !== mine.length) throw new Error('unexpected answer from the page');
+        v.forEach((r, i) => {
+          if (r === true || typeof r === 'string') seen.push(name(mine[i]));
+          if (typeof r === 'string') failed.push(`${name(mine[i])} threw: ${clean(r.split('\n')[0])}`);
+          else if (r !== true) (ranHere(frame, mine[i]) ? trusted : missing).push(name(mine[i]));
+        });
+      }
+      if (trusted.length) {
+        log(`page scripts (${at}): this session cannot see ${trusted.join(', ')}, which ran in this page load before the ` +
+          're-attach; counted as running');
+      }
+      ran(frame.loaderId, seen);
+      report(failed.length ? 'broken' : missing.length ? 'original' : 'patched',
+        [...failed, ...(missing.length ? [`not run: ${missing.join(', ')}`] : [])].join('; '), at);
+    } catch (e) {
+      log(`page scripts (${at}): could not check (${clean(e.message)})`);
+    }
+  };
+  cdp.on('Page.loadEventFired', (p, sid) => (sid === pageSession && ready ? check('page load') : undefined));
+  // The loader already checked this when it read the mods; checked again here for any other caller, since a script
+  // that does not parse inside its function could otherwise run outside the guard.
+  for (const s of scripts) {
+    try { new Script(wrap(s.text)); } catch (e) {
+      return report('broken', `${name(s)} does not parse as a script (${clean(e.message)}); no page script was injected`, when);
+    }
+  }
+  try {
+    await cdp.send('Page.enable', {}, pageSession);
+    for (const s of scripts) {
+      await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: pageScriptSource(s), worldName: WORLD(s.mod) }, pageSession);
+    }
+    const frame = await mainFrame();
+    // A throw is recorded by the script's wrapper and read by the check; the evaluation's own result is not used.
+    // Recorded once the reply comes: if the connection drops between the run and the reply, a re-attach runs that
+    // script again (twice rather than never).
+    for (const s of scripts) {
+      if (ranHere(frame, s)) continue;
+      await inWorld(frame, s.mod, pageScriptSource(s));
+      ran(frame.loaderId, [name(s)]);
+    }
+  } catch (e) {
+    report('original', `injection failed: ${clean(e.message)}`, when);
+  }
+  ready = true;
+  await check(when);
 }

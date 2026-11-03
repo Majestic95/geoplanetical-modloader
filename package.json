@@ -1,11 +1,11 @@
 {
   "name": "geoplanetical-modloader",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "engines": {
     "node": ">=22.15"
   },
-  "description": "Geoplanetical Mod Loader: starts Geoplanetical with data-only mods applied in memory, plus tools for mod authors",
+  "description": "Geoplanetical Mod Loader: starts Geoplanetical with mods applied in memory (code patches and page scripts), plus tools for mod authors",
   "license": "CC0-1.0",
   "scripts": {
     "test": "node patcher/test-engine.mjs && node launcher/test-install.mjs && node tools/test-port-patches.mjs",

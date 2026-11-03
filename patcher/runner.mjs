@@ -23,22 +23,24 @@ const debugPort = port => waitFor('the debug port', async () => {
   return res.ok ? res.json() : null;
 }, 180000);
 
-// Launches through Steam and attaches. onSwap({ bundle, status }) reports each worker swap; onExit(code) is called
-// when the game closes (0) or the patcher can no longer serve it (1).
-export async function launchAndServe({ steam, port, payloads, log, onSwap, onExit }) {
+// Launches through Steam and attaches. scripts: page scripts [{ mod, path, text }] (patcher/session.mjs). onSwap({ bundle,
+// status }) reports each worker swap and the page scripts (bundle PAGE); onExit(code) is called when the game closes (0)
+// or the patcher can no longer serve it (1).
+export async function launchAndServe({ steam, port, payloads, scripts = [], log, onSwap, onExit }) {
+  const pageState = {}; // which page load the page scripts last ran in, across re-attaches (patcher/session.mjs)
   // A failed start is logged; the wait for the debug port below then times out with its own error.
   spawn(steam, ['-applaunch', APP_ID, `--remote-debugging-port=${port}`], { detached: true, stdio: 'ignore' })
     .on('error', e => log(`Steam could not be started: ${e.message}`)).unref();
   log(`launched through Steam: ${steam} -applaunch ${APP_ID} --remote-debugging-port=${port}`);
   const version = await debugPort(port);
   log(`debug port up: ${version.Browser}`);
-  await attach({ wsUrl: version.webSocketDebuggerUrl, port, payloads, log, onSwap, onExit });
+  await attach({ wsUrl: version.webSocketDebuggerUrl, port, payloads, scripts, pageState, log, onSwap, onExit });
 }
 
 // (Re)attaches. If the socket closes while the game is still running, wait for the port again. The same browser
 // process (same debugger URL: only the socket dropped) is re-attached without a reload, since that could lose unsaved
 // play; a new process (the startup guard relaunched the game) is attached like a fresh launch, reload included.
-async function attach({ wsUrl, port, payloads, log, onSwap, onExit, previousWsUrl = null }) {
+async function attach({ wsUrl, port, payloads, scripts, pageState, log, onSwap, onExit, previousWsUrl = null }) {
   const reattach = previousWsUrl === wsUrl;
   const cdp = await connect(wsUrl);
   cdp.onClose(async () => {
@@ -49,12 +51,12 @@ async function attach({ wsUrl, port, payloads, log, onSwap, onExit, previousWsUr
     try {
       const v = await debugPort(port);
       if (v.webSocketDebuggerUrl !== wsUrl) log('the game was relaunched (new browser process); attaching as a fresh launch');
-      await attach({ wsUrl: v.webSocketDebuggerUrl, port, payloads, log, onSwap, onExit, previousWsUrl: wsUrl });
+      await attach({ wsUrl: v.webSocketDebuggerUrl, port, payloads, scripts, pageState, log, onSwap, onExit, previousWsUrl: wsUrl });
       log('re-attached');
     } catch (e) {
       log(`!!! could not re-attach (${e.message}). Workers started from now on run UNMODDED code.`);
       onExit(1);
     }
   });
-  await attachAndServe(cdp, { pageUrl: /\/renderer\/index\.html/, payloads, log, onSwap, reattach });
+  await attachAndServe(cdp, { pageUrl: /\/renderer\/index\.html/, payloads, scripts, pageState, log, onSwap, reattach });
 }

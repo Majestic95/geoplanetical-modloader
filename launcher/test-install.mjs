@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { deflateRawSync, crc32 } from 'node:zlib';
 import { entryPath, readZip, readFolder, readChosen, installMods, itemsFromPage } from './install.mjs';
+import { FORMAT, loadMods } from '../patcher/mods.mjs';
 
 let failed = 0;
 function expect(name, fn, { throws = null, check = null } = {}) {
@@ -117,6 +118,15 @@ expect('zip: not a zip', () => readZip(Buffer.from('just text, long enough to se
   const r = install([{ name: 'pack.zip', files: readZip(zip([...modFiles('pack/one/', 'one'), ...modFiles('pack/two/', 'two', { requires: ['one'] })])) }], mods);
   expect('install: a pack of two mods installs both', () => r.added.map(x => x.id).sort().join(), { check: s => s === 'one,two' });
 }
+{
+  // A format-2 mod with only a page script, in a sub-folder.
+  const mods = fresh();
+  const json = JSON.stringify({ id: 'tau', name: 'Tau', version: '1', description: 'D', format: 2, builds: ['1'], scripts: ['page/labels.js'] });
+  install([{ name: 'tau.zip', files: readZip(zip([{ name: 'tau/mod.json', data: json }, { name: 'tau/page/labels.js', data: 'window.tau = 1;' }])) }], mods);
+  const [m] = loadMods(mods);
+  expect('install: a script-only mod with its script in a sub-folder loads', () => m,
+    { check: x => x.id === 'tau' && !x.patches.length && x.scripts.length === 1 && x.scripts[0].path === 'page/labels.js' && x.scripts[0].text === 'window.tau = 1;' });
+}
 
 // Install: replacing.
 {
@@ -163,7 +173,7 @@ const unchanged = (name, prepare, items, re) => {
 unchanged('refused: no mod.json', m => placeMod(m, 'keep', 'keep'), [asItem('x.zip', [{ name: 'readme.txt', data: 'hi' }])], /no mod\.json found/);
 unchanged('refused: a broken mod', m => placeMod(m, 'eps', 'eps'), [asItem('eps.zip', modFiles('', 'eps', { typo: 1 }))], /^eps\.zip: mod\.json: unknown field "typo"$/);
 unchanged('refused: a missing patch file named relative to the mod', () => {}, [asItem('mp.zip', modFiles('', 'mp', { patches: ['patches/none.json'] }))], /^mp\.zip: patches[\\/]none\.json: ENOENT[^:]*: no such file or directory, open 'patches[\\/]none\.json'$/);
-unchanged('refused: needs a newer loader', () => {}, [asItem('new.zip', modFiles('', 'newer', { format: 2 }))], /needs a newer Geoplanetical Mod Loader/);
+unchanged('refused: needs a newer loader', () => {}, [asItem('new.zip', modFiles('', 'newer', { format: FORMAT + 1 }))], /needs a newer Geoplanetical Mod Loader/);
 unchanged('refused: an unsafe path', () => {}, [asItem('evil.zip', [...modFiles('', 'evil'), { name: '../outside.txt', data: 'x' }])], /not a plain path/);
 unchanged('refused: a shortcut inside the mod', () => {}, [asItem('lnk.zip', [...modFiles('', 'lnk'), { name: 'readme.lnk', data: 'x' }])], /readme\.lnk is a shortcut or shell file/);
 unchanged('refused: the same path twice (case)', () => {}, [asItem('dup.zip', [...modFiles('', 'dup'), { name: 'Patches/P.json', data: patch }])], /appears twice/);

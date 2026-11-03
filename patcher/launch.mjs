@@ -1,6 +1,7 @@
 // Runtime patcher: launches Geoplanetical through Steam with Chromium remote debugging, swaps the patched bundles
-// into their workers before the originals run (patcher/session.mjs), and checks the marker inside each worker.
-// Stays attached until the game closes: later worker restarts are patched too.
+// into their workers before the originals run (patcher/session.mjs), and checks the marker inside each worker; the
+// mods' page scripts run in the game page. Stays attached until the game closes: later worker restarts are patched
+// too, and the page scripts run again on every page load.
 //
 // The command-line launcher for mod authors (players use launcher/). Run from the workspace that holds mods/.
 // Usage: node <loader>/patcher/launch.mjs [--port 9333] [--mods <dir>] [--mod <id> ...] [--unpatched] [--dry-run]
@@ -21,6 +22,7 @@ import { modArgs, argValue, MODS_DIR } from './build.mjs';
 import { loadMods } from './mods.mjs';
 import { findGame, gameRunning, steamExe, originalBundle } from './game.mjs';
 import { launchAndServe } from './runner.mjs';
+import { PAGE } from './session.mjs';
 
 const argv = process.argv.slice(2);
 const opt = name => argv.includes(name);
@@ -42,6 +44,7 @@ async function main() {
   if (gameRunning()) fail('Geoplanetical is already running; the patcher only attaches to a game it starts');
 
   const payloads = new Map();
+  let scripts = [];
   if (!opt('--unpatched')) {
     const modsDir = resolve(argValue(argv, '--mods') || MODS_DIR);
     const mods = loadMods(modsDir, { only: modArgs(argv) });
@@ -54,6 +57,12 @@ async function main() {
       payloads.set(bundle, r.text);
       log(`built ${bundle}: ${r.report.length} edit(s)`);
     }
+    // Page scripts run as they are; like a patch, a script is only for the builds its mod was made for.
+    for (const m of mods.filter(x => x.scripts.length && !x.builds.includes(build))) {
+      fail(`mod ${m.id} ${m.version} is made for game build ${m.builds.join(', ')}, not ${build}: it needs updating for this game version`);
+    }
+    scripts = mods.flatMap(m => m.scripts.map(s => ({ mod: m.id, path: s.path, text: s.text })));
+    if (scripts.length) log(`page: ${scripts.length} script(s): ${scripts.map(s => `${s.mod}/${s.path}`).join(', ')}`);
   }
   log(`mode ${opt('--unpatched') ? 'UNPATCHED baseline' : 'patched'}, build ${build}, port ${port}, game ${game.dir}`);
   log('single player only: a patched game diverges from unpatched multiplayer peers');
@@ -61,13 +70,16 @@ async function main() {
 
   const steam = steamExe();
   if (!steam) fail('Steam not found (HKCU\\Software\\Valve\\Steam SteamExe)');
-  await launchAndServe({ steam, port, payloads, log, onSwap, onExit: code => { log(code ? 'patcher exiting (error)' : 'patcher exiting'); process.exit(code); } });
+  await launchAndServe({ steam, port, payloads, scripts, log, onSwap, onExit: code => { log(code ? 'patcher exiting (error)' : 'patcher exiting'); process.exit(code); } });
   log('attached; leave this running while you play. Ctrl+C detaches (later worker restarts are then unpatched).');
 }
 
-function onSwap({ bundle, status }) {
+function onSwap({ bundle, status, detail }) {
   if (status === 'patched') return;
-  if (status === 'unverified') {
+  if (bundle === PAGE) {
+    log(`!!! A PAGE SCRIPT ${status === 'broken' ? 'FAILED' : 'DID NOT RUN'}: ${detail || status}. The workers are unaffected; ` +
+      'see the game\'s developer tools console for the error.');
+  } else if (status === 'unverified') {
     log(`worker ${bundle}: the patched code ran but could not be verified as the one serving the game.`);
   } else if (status === 'broken') {
     log(`!!! THE MOD FAILED in ${bundle}: its code threw while starting and the worker is stopped, so the game will ` +

@@ -19,5 +19,7 @@ Then click "Refresh" in the loader (or open it): the mod appears in its list wit
   new version for you.
 - A mod made for another version of the game is listed but cannot be switched on until its author updates it.
 - A mod that needs another mod says so in the list; switch both on.
-- Mods are data files only. The loader checks every change a mod makes before the game starts, and
-  never changes the game's own files.
+- The loader checks every change a mod makes to the game's code before the game starts, and never changes
+  the game's own files. Some mods also run a script that changes what the game's window shows (the
+  loader's list says which); such a script cannot reach your saves or the game's settings. Changes to the
+  game's code are still code from the mod's author: add mods only from authors you trust.

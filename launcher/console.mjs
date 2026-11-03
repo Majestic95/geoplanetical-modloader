@@ -72,7 +72,7 @@ export async function runConsole({ dryRun, port, gameDirArg }) {
     if (dryRun) { log('dry run: everything checks out; the game was not started'); rl.close(); return; }
     console.log('Leave this window open while you play: it keeps the mods active. Closing it early turns them off for\n' +
       'parts of the game that restart. Saves made now need the same mods to load correctly.');
-    const end = await playSession({ steam, port, payloads: built.payloads, chosen, log });
+    const end = await playSession({ steam, port, payloads: built.payloads, scripts: built.scripts, chosen, log });
     await exitAfterKey(end.problem ? 1 : 0, end.message);
     return;
   }
@@ -105,6 +105,7 @@ function screen(game, mods, broken, enabled) {
       const needs = m.requires.map(id => mods.find(o => o.id === id)?.name ?? `${id} (not installed)`);
       console.log(`        needs: ${needs.join(', ')}`);
     }
+    if (m.scripts?.length) console.log('        also runs its own script in the game\'s window');
     if (m.changes?.length) {
       console.log(`        What it changes:`);
       for (const g of changeGroups(m)) {

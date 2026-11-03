@@ -29,12 +29,14 @@ The included `README.txt` covers saves, updates and what to do when something go
 
 ## For mod authors
 
-A mod is plain data: a `mod.json` manifest and patch files of exact find-and-replace edits on the game's code,
-each pinned to nearby stable text. The loader checks every edit before the game starts and refuses the whole mod
-if anything does not match exactly, so a game update can never make a mod patch the wrong code.
+A mod is a `mod.json` manifest and patch files of exact find-and-replace edits on the game's code, each pinned to
+nearby stable text. The loader checks every edit before the game starts and refuses the whole mod if anything does
+not match exactly, so a game update can never make a mod patch the wrong code. From mod format 2, a mod can also
+bring page scripts: scripts that change what the game's window shows, such as labels or descriptions, walled off from
+the game's code, saves and settings.
 
-- [docs/mod-format.md](docs/mod-format.md): the format specification (fields, anchors, determinism, load order,
-  requirements, conflicts).
+- [docs/mod-format.md](docs/mod-format.md): the format specification (fields, anchors, determinism, page scripts,
+  load order, requirements, conflicts).
 - [docs/authoring.md](docs/authoring.md): writing, testing, releasing and porting a mod with the tools here.
 
 ## How it works
@@ -48,6 +50,9 @@ if anything does not match exactly, so a game update can never make a mod patch 
 3. It checks inside each worker that the patched code is the code serving the game, and stays attached until the
    game closes, so a worker that restarts during play is patched again. If a check fails, the window shows a red
    warning.
+4. The mods' page scripts run in the game's main page, walled off from the game's code (each mod's in an isolated
+   world with the page's elements only): at the start of every page load, and once in the page already open. If one
+   fails, the window shows an amber warning; the game and its simulation are unaffected.
 
 Source layout:
 
