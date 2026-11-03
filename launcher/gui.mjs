@@ -1,6 +1,7 @@
 // The launcher's window: a small HTTP server on 127.0.0.1 serves the page in launcher/gui-page.mjs and a JSON API, and the page opens
 // in a Microsoft Edge app window (no address bar), or the default browser if Edge is missing. Every API call carries a
-// random token, so no other page or program on the PC can drive the launcher. The process is what serves the patched
+// random token, so no web page and no other user's program can drive the launcher (the token is in the window's
+// command line, which programs of the same Windows user can read). The process is what serves the patched
 // code to the game's workers, so it stays alive while a game session runs even if the window is closed; otherwise it
 // exits on Quit or when the window has been gone for 15 seconds (150 in a default-browser tab, which is throttled when
 // hidden). Only one launcher runs at a time (a named-pipe lock).
@@ -15,9 +16,14 @@ import { findGame, gameRunning, steamExe } from '../patcher/game.mjs';
 import {
   VERSION, PRODUCT, MODS, LOG, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
 } from './core.mjs';
+import { installMods, itemsFromPage, readChosen } from './install.mjs';
 import PAGE from './gui-page.mjs';
 
 const LOG_LINES = 400;
+// Request bodies: small for every action, larger for a dropped mod (its files in base64; launcher/install.mjs caps the
+// unpacked size at 32 MB).
+const BODY_MAX = 65536;
+const INSTALL_BODY_MAX = 48 * 1024 * 1024;
 const GONE_MS = 15000;
 const GONE_MS_BROWSER = 150000;
 // One launcher at a time: two would both start the game on the same debug port and serve it twice. The pipe keeps
@@ -51,7 +57,8 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   let game = findGame(settings.gameDir || null);
   let { mods, broken } = scanMods(MODS);
   // phase: ready (choose and start) | building | playing | ended (session over or dry run) ; message: the latest notice
-  let phase = 'ready', message = null, problem = false, lastSeen = Date.now(), browsing = false;
+  // or refusal ; notice: what the last action did when it succeeded (a mod added), until the next action
+  let phase = 'ready', message = null, notice = null, problem = false, lastSeen = Date.now(), browsing = false;
   let running = { at: 0, value: false };
   const gameIsRunning = () => {
     if (Date.now() - running.at > 3000) {
@@ -64,7 +71,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   if (!steam) log('Steam was not found on this PC');
 
   const state = () => ({
-    version: VERSION, dryRun, phase, message, problem,
+    version: VERSION, dryRun, phase, message, notice, problem,
     steamFound: !!steam,
     game: game && { dir: game.dir, build: game.build, updating: game.updating, targetBuild: game.targetBuild },
     savedDir: settings.gameDir || null,
@@ -123,6 +130,30 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     return null;
   };
 
+  // Adds mods (launcher/install.mjs): `read` gives the install items. Returns the refusal, or null with `notice` set.
+  const add = (read, from) => {
+    if (phase !== 'ready') return 'Mods cannot be added while the game is starting or running.';
+    let added, kept;
+    try { ({ added, kept } = installMods(read(), MODS)); } catch (e) {
+      log(`could not add ${from}: ${e.message}`);
+      ({ mods, broken } = scanMods(MODS));
+      return `Could not add the mod: ${e.message}`;
+    } finally {
+      lastSeen = Date.now(); // the install blocks; polls queued meanwhile are read only after the next timer check
+    }
+    ({ mods, broken } = scanMods(MODS));
+    for (const a of added) {
+      log(`added ${a.name} ${a.version} to mods\\${a.folder}` +
+        (a.from.length ? ` (replaced folder ${a.from.join(', ')}${a.replaced.length ? `, version ${a.replaced.join(', ')}` : ''})` : ''));
+    }
+    if (kept) log(`the replaced copies could not be moved to the Recycle Bin; they are in ${kept}`);
+    const unfit = added.filter(a => !game || !mods.find(m => m.id === a.id)?.builds.includes(game.build));
+    notice = `Added ${added.map(a => `${a.name} ${a.version}${a.replaced.length ? ` (replacing ${a.replaced.join(', ')})` : ''}`).join(', ')}.` +
+      (added.some(a => a.from.length) ? (kept ? ` The previous copy is kept in ${kept}.` : ' The previous copy is in the Recycle Bin.') : '') +
+      (unfit.length ? ` ${unfit.map(a => a.name).join(', ')} ${unfit.length > 1 ? 'are' : 'is'} not made for your game version yet.` : '');
+    return null;
+  };
+
   const quit = () => {
     if (phase === 'building') return 'Wait until the mods are built: the game is about to start.';
     if (phase === 'playing') log('quit while the game was running: parts of the game that restart now run WITHOUT the mods.');
@@ -149,18 +180,27 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     if (!url.pathname.startsWith('/api/') || !sameToken(req.headers['x-token'])) return send(403, { error: 'forbidden' });
     lastSeen = Date.now();
     let body = {};
+    // A drop is refused before its (large) body is read while a game session runs: reading it would hold up the
+    // process that serves the game.
+    if (url.pathname === '/api/install' && phase !== 'ready') {
+      return send(200, { error: 'Mods cannot be added while the game is starting or running.', state: state() });
+    }
     if (req.method === 'POST') {
+      const max = url.pathname === '/api/install' ? INSTALL_BODY_MAX : BODY_MAX;
       let raw = '';
-      for await (const chunk of req) { raw += chunk; if (raw.length > 65536) return send(413, { error: 'too large' }); }
+      for await (const chunk of req) {
+        raw += chunk;
+        if (raw.length > max) return send(413, { error: max === BODY_MAX ? 'too large' : 'What was dropped is too large to be a mod (over 32 MB).' });
+      }
       try { body = raw ? JSON.parse(raw) : {}; } catch { return send(400, { error: 'bad json' }); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) body = {};
     }
     // A refused action is shown in the window's banner until the next action (message), unless a session is under way.
     const reply = (error = null) => {
-      if (error && phase === 'ready') message = error;
+      if (error && phase === 'ready') { message = error; notice = null; }
       return send(200, { error, state: state() });
     };
-    const done = () => { if (phase === 'ready') message = null; return reply(); };
+    const done = (keepNotice = false) => { if (phase === 'ready') { message = null; if (!keepNotice) notice = null; } return reply(); };
     switch (`${req.method} ${url.pathname}`) {
       case 'GET /api/state': return reply();
       case 'POST /api/toggle': {
@@ -179,7 +219,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       }
       case 'POST /api/browse': {
         if (phase !== 'ready') return reply('The game folder cannot be changed now.');
-        if (browsing) return reply('The folder dialog is already open.');
+        if (browsing) return reply('A dialog is already open.');
         browsing = true;
         let dir;
         try { dir = await browseFolder(); } finally { browsing = false; } // asynchronous: polling goes on meanwhile
@@ -192,6 +232,21 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         if (phase !== 'ready') return reply('Wait until the session is over.');
         game = findGame(settings.gameDir || null); ({ mods, broken } = scanMods(MODS));
         return done();
+      }
+      case 'POST /api/install': {
+        const e = add(() => itemsFromPage(body), 'what was dropped');
+        return e ? reply(e) : done(true);
+      }
+      case 'POST /api/add': {
+        if (phase !== 'ready') return reply('Mods cannot be added while the game is starting or running.');
+        if (browsing) return reply('A dialog is already open.');
+        browsing = true;
+        let file;
+        try { file = await chooseModFile(); } finally { browsing = false; }
+        lastSeen = Date.now();
+        if (!file) return done();
+        const e = add(() => readChosen(file), file);
+        return e ? reply(e) : done(true);
       }
       case 'POST /api/start': return reply(start());
       case 'POST /api/open': {
@@ -275,6 +330,17 @@ async function browseFolder() {
     '$f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; ' +
     '[Console]::OutputEncoding=[Text.Encoding]::UTF8; if ($d.ShowDialog($f) -eq "OK") { $d.SelectedPath }');
   return dir || null;
+}
+
+// The Windows file picker for Add mod: a mod's .zip, or the mod.json in its folder. Resolves the file, or null if
+// cancelled. The command is constant (no user input).
+async function chooseModFile() {
+  const file = await powershell('Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; ' +
+    "$d.Title = 'Add a mod: choose its .zip file, or the mod.json inside its folder'; " +
+    "$d.Filter = 'Mod (.zip or mod.json)|*.zip;mod.json|All files|*.*'; " +
+    '$f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; ' +
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8; if ($d.ShowDialog($f) -eq "OK") { $d.FileName }');
+  return file || null;
 }
 
 // A Windows message box: the windowed launcher's only way to speak when it has no window (it has no console).

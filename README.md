@@ -13,8 +13,9 @@ Not affiliated with the developers of Geoplanetical.
 
 1. Download the packaged loader (a zip with `GeoplaneticalModLoader.exe`) and unzip it anywhere, or build it from
    source (below).
-2. Unzip each mod you want into its `mods` folder.
-3. Run `GeoplaneticalModLoader.exe`, switch mods on or off, and click **Play with mods**.
+2. Run `GeoplaneticalModLoader.exe` and drop each mod's zip (or folder) onto its window, or click **Add mod...**.
+   The loader checks the mod, adds it to its `mods` folder and replaces an older version of the same mod.
+3. Switch mods on or off and click **Play with mods**.
 
 The included `README.txt` covers saves, updates and what to do when something goes wrong.
 
@@ -53,7 +54,7 @@ Source layout:
 | Folder | Contents |
 |---|---|
 | `patcher/` | Mod loading and validation (`mods.mjs`), the patch engine (`patch-engine.mjs`), game detection (`game.mjs`), the launch-and-attach runtime (`runner.mjs`, `session.mjs`, `cdp.mjs`), the author command-line tools `build.mjs` and `launch.mjs`, and tests |
-| `launcher/` | The player launcher: a window served on 127.0.0.1 (`gui.mjs`, `gui-page.mjs`), a text menu (`console.mjs`), shared steps (`core.mjs`), and the packager (`package.mjs`) |
+| `launcher/` | The player launcher: a window served on 127.0.0.1 (`gui.mjs`, `gui-page.mjs`), adding mods from a zip or folder (`install.mjs`), a text menu (`console.mjs`), shared steps (`core.mjs`), and the packager (`package.mjs`) |
 | `tools/` | Author tools for reading the game's minified code and porting mods to new game builds |
 | `docs/` | Format specification and authoring guide |
 

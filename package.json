@@ -8,7 +8,7 @@
   "description": "Geoplanetical Mod Loader: starts Geoplanetical with data-only mods applied in memory, plus tools for mod authors",
   "license": "CC0-1.0",
   "scripts": {
-    "test": "node patcher/test-engine.mjs && node tools/test-port-patches.mjs",
+    "test": "node patcher/test-engine.mjs && node launcher/test-install.mjs && node tools/test-port-patches.mjs",
     "package": "node launcher/package.mjs"
   },
   "devDependencies": {

@@ -16,7 +16,11 @@ WHAT YOU NEED
 INSTALLING MODS
 ---------------
 1. Unzip this folder anywhere (for example your Desktop). Keep the files together.
-2. Unzip each mod into the "mods" folder here, one folder per mod (see mods\README.txt).
+2. Start GeoplaneticalModLoader.exe and drop each mod's .zip file (or its unzipped folder) onto the loader's
+   window, or click "Add mod..." and choose the zip. The loader checks the mod before adding it and puts it in
+   the "mods" folder here. Adding a new version of a mod replaces the old one (which goes to the Recycle Bin);
+   its switch stays as you left it.
+   You can also unzip a mod into the "mods" folder yourself (see mods\README.txt) and click "Refresh".
 
 
 PLAYING

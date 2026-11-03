@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Add mods from the window: drop a mod's zip file or folder onto it, or click **Add mod...** and choose the zip (or
+  the `mod.json` inside a folder). The loader checks the whole mod with its strict reader before anything in the
+  `mods` folder changes, replaces every installed copy of the same mod (same `id`, whatever its version) and moves
+  the replaced copy to the Recycle Bin, keeps the mod's on/off switch, and puts everything back if a step fails.
+  Added files are marked as downloaded from the internet, as Windows' own Extract All does. A zip of the mod folder,
+  of the files inside it, of a repository holding the mod, or of several mods at once all work. See
+  [docs/authoring.md](docs/authoring.md#7-release).
+- **Refresh** button: shows mods added to the `mods` folder by hand without restarting the loader.
+- Mod format unchanged (format 1).
+
 ## 0.3.0 (2026-11-02)
 
 First release as a standalone, mod-agnostic loader. Versions 0.1 and 0.2 shipped inside the Geoplanetical Balance

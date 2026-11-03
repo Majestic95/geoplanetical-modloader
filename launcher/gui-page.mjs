@@ -57,6 +57,7 @@ export default String.raw`<!doctype html>
   pre.log { max-height: 260px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: 12px/1.45 Consolas, monospace; color: #b8c4cf; white-space: pre-wrap; margin: 10px 0 0; }
   .error { color: var(--bad); margin-top: 8px; }
   .hidden { display: none !important; }
+  body.dropping main { outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: 10px; }
 </style>
 </head>
 <body>
@@ -80,7 +81,13 @@ export default String.raw`<!doctype html>
     </div>
   </section>
 
-  <div class="label" style="margin-top:18px">Mods</div>
+  <div class="row" style="margin-top:18px">
+    <div class="label" style="margin:0">Mods</div>
+    <span style="flex:1"></span>
+    <button class="btn" id="add">Add mod&hellip;</button>
+    <button class="btn" id="refresh">Refresh</button>
+  </div>
+  <div class="mod-note" style="margin:4px 0 10px">To add a mod, drop its .zip file or its folder onto this window, or click Add mod.</div>
   <div id="mods"></div>
   <div id="broken"></div>
 
@@ -102,7 +109,7 @@ export default String.raw`<!doctype html>
 <script>
 (function () {
   var token = new URLSearchParams(location.search).get('t');
-  var st = null, modsKey = '', openMods = {}, gone = false, lastLogSeq = -1;
+  var st = null, modsKey = '', openMods = {}, gone = false, lastLogSeq = -1, adding = false;
   var $ = function (id) { return document.getElementById(id); };
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 
@@ -130,6 +137,7 @@ export default String.raw`<!doctype html>
     $('dry').classList.toggle('hidden', !s.dryRun);
     var ready = s.phase === 'ready';
     $('quit').disabled = s.phase === 'building';
+    $('add').disabled = $('refresh').disabled = !ready || adding || gone;
 
     // Game card
     var gs = $('game-status'), note = '';
@@ -149,7 +157,7 @@ export default String.raw`<!doctype html>
     $('folder').classList.toggle('hidden', !!(s.game && s.game.build) || !ready);
 
     // Mods (rebuilt only when they change, so open changelogs stay open)
-    var key = JSON.stringify([s.mods, ready, s.game && s.game.build]);
+    var key = JSON.stringify([s.mods, s.broken, ready, s.game && s.game.build]);
     if (key !== modsKey) { modsKey = key; renderMods(s, ready); }
 
     // Banner and play button
@@ -159,7 +167,9 @@ export default String.raw`<!doctype html>
       play.disabled = !s.game || !s.steamFound || on === 0 || !!(s.game && s.game.updating);
       play.textContent = s.dryRun ? 'Check mods (dry run)' : 'Play with mods';
       pn.textContent = on ? on + ' mod' + (on > 1 ? 's' : '') + ' on' : 'Switch a mod on to play with it';
-      banner('warn', s.message);
+      if (adding) banner('info', 'Adding the mod\u2026');
+      else if (s.message) banner('warn', s.message);
+      else banner('ok', s.notice);
     } else if (s.phase === 'building') {
       play.disabled = true; play.textContent = 'Building\u2026'; pn.textContent = '';
       banner('info', s.message || 'Building the mods\u2026');
@@ -185,7 +195,7 @@ export default String.raw`<!doctype html>
 
   function renderMods(s, ready) {
     var box = $('mods'); box.textContent = '';
-    if (!s.mods.length) box.appendChild(el('div', 'card mod-note', 'No mods found. Put a mod folder inside the mods folder.'));
+    if (!s.mods.length) box.appendChild(el('div', 'card mod-note', 'No mods yet. Drop a mod\u2019s .zip file or folder onto this window, or click Add mod.'));
     s.mods.forEach(function (m) {
       var card = el('section', 'card'), head = el('div', 'mod-head');
       head.appendChild(el('span', 'mod-name', m.name));
@@ -233,7 +243,97 @@ export default String.raw`<!doctype html>
   $('play').onclick = function () { api('POST', 'start'); };
   $('use').onclick = function () { api('POST', 'gamedir', { dir: $('dir').value }); };
   $('browse').onclick = function () { api('POST', 'browse'); };
+  $('add').onclick = function () { api('POST', 'add'); };
+  $('refresh').onclick = function () { api('POST', 'rescan'); };
   $('open-mods').onclick = function () { api('POST', 'open', { what: 'mods' }); };
+
+  // Dropping onto the window. Every drop is caught, so a dropped file never replaces this page. A zip is sent as it is;
+  // a folder as its files (paths starting with the folder's name). The loader checks everything before it installs.
+  var MAX_BYTES = 32 * 1024 * 1024, MAX_FILES = 5000, dragTimer = null;
+  var canAdd = function () { return !!st && st.phase === 'ready' && !adding && !gone; };
+  function base64(file) {
+    return new Promise(function (ok, fail) {
+      var r = new FileReader();
+      r.onload = function () { var s = String(r.result); ok(s.slice(s.indexOf(',') + 1)); };
+      r.onerror = function () { fail(r.error); };
+      r.readAsDataURL(file);
+    });
+  }
+  function fileOf(entry) { return new Promise(function (ok, fail) { entry.file(ok, fail); }); }
+  function children(dir) {
+    var reader = dir.createReader(), all = [];
+    return new Promise(function (ok, fail) {
+      (function more() {
+        reader.readEntries(function (batch) { if (!batch.length) return ok(all); all = all.concat(batch); more(); }, fail);
+      })();
+    });
+  }
+  function readSized(entry, size) {
+    return fileOf(entry).then(function (f) {
+      size.bytes += f.size;
+      if (size.bytes > MAX_BYTES) throw new Error('it is larger than 32 MB, too large to be a mod');
+      return base64(f);
+    });
+  }
+  function walk(entry, out, size) {
+    if (entry.isFile) {
+      if (out.length >= MAX_FILES) return Promise.reject(new Error('it holds more than ' + MAX_FILES + ' files'));
+      var item = { path: entry.fullPath.replace(/^\//, ''), data: '' };
+      out.push(item);
+      return readSized(entry, size).then(function (d) { item.data = d; });
+    }
+    return children(entry).then(function (list) {
+      return list.reduce(function (p, e) { return p.then(function () { return walk(e, out, size); }); }, Promise.resolve());
+    });
+  }
+  function addDropped(entries) {
+    var odd = entries.filter(function (en) { return en.isFile && !/\.zip$/i.test(en.name); })[0];
+    if (odd) {
+      $('err').textContent = odd.name.toLowerCase() === 'mod.json' ? 'Drop the whole mod folder, not only its mod.json.' : odd.name + ' is not a mod: drop a mod\u2019s .zip file or its folder.';
+      return;
+    }
+    adding = true; $('err').textContent = ''; render(st);
+    var items = [], size = { bytes: 0 };
+    entries.reduce(function (p, en) {
+      return p.then(function () {
+        if (en.isFile) return readSized(en, size).then(function (d) { items.push({ name: en.name, zip: d }); });
+        var files = [];
+        return walk(en, files, size).then(function () { items.push({ name: en.name, files: files }); });
+      });
+    }, Promise.resolve()).then(function () {
+      return api('POST', 'install', { items: items });
+    }).catch(function (e) {
+      $('err').textContent = 'Could not add what was dropped: ' + ((e && e.message) || e);
+    }).then(function () { adding = false; if (st) render(st); });
+  }
+  document.addEventListener('dragover', function (e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = canAdd() ? 'copy' : 'none';
+    document.body.classList.toggle('dropping', canAdd());
+    clearTimeout(dragTimer);
+    dragTimer = setTimeout(function () { document.body.classList.remove('dropping'); }, 250);
+  });
+  document.addEventListener('drop', function (e) {
+    e.preventDefault();
+    document.body.classList.remove('dropping');
+    if (!canAdd()) {
+      if (st && st.phase !== 'ready' && !gone) $('err').textContent = 'Mods can be added when no game session is running.';
+      return;
+    }
+    var dt = e.dataTransfer, entries = [];
+    // The entries must be taken now: the browser empties the drop's data when this handler returns.
+    for (var i = 0; i < dt.items.length; i++) {
+      var en = dt.items[i].kind === 'file' && dt.items[i].webkitGetAsEntry ? dt.items[i].webkitGetAsEntry() : null;
+      if (en) entries.push(en);
+    }
+    if (!entries.length) {
+      $('err').textContent = dt.getData('text/uri-list')
+        ? 'To add a mod from a link, download its .zip file first, then drop the zip here.'
+        : 'Drop a mod\u2019s .zip file or its folder here.';
+      return;
+    }
+    addDropped(entries);
+  });
   $('open-log').onclick = function () { api('POST', 'open', { what: 'log' }); };
   $('quit').onclick = function () {
     if (st && st.phase === 'playing' && !confirm('The game is running. Quitting the loader turns the mods off for parts of the game that restart. Quit anyway?')) return;
@@ -242,7 +342,7 @@ export default String.raw`<!doctype html>
   function closed() {
     gone = true;
     banner('info', 'The loader has closed. You can close this window.');
-    ['play', 'quit', 'open-mods', 'open-log'].forEach(function (id) { $(id).disabled = true; });
+    ['play', 'quit', 'open-mods', 'open-log', 'add', 'refresh'].forEach(function (id) { $(id).disabled = true; });
     setTimeout(function () { window.close(); }, 400);
   }
   // Three failed polls in a row (not one) mean the launcher has gone.

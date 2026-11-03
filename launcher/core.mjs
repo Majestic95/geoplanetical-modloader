@@ -20,9 +20,13 @@ export const MODS = join(BASE, 'mods');
 const SETTINGS = join(BASE, 'launcher-settings.json');
 export const LOG = join(BASE, 'launcher.log');
 
-// A log that writes launcher.log and passes each line to the front end's `show(line)`.
+// A log that writes launcher.log and passes each line to the front end's `show(line)`. Messages can carry text from a
+// mod (its name, a file name): control characters are replaced and further lines indented, so no message can pass
+// for a line of its own.
 export function makeLog(show) {
-  return msg => {
+  return text => {
+    // eslint-disable-next-line no-control-regex
+    const msg = String(text).replace(/\r?\n/g, '\n    ').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, '?');
     const line = `[${new Date().toISOString().slice(11, 19)}] ${msg}`;
     try { show(line); } catch { /* the front end may be gone */ }
     try { appendFileSync(LOG, `[${new Date().toISOString()}] ${msg}\n`); } catch { /* the log is a convenience */ }

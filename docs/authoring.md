@@ -99,9 +99,26 @@ Test at least: a new game, a few months of play, save, quit, and load the save a
 
 ## 7. Release
 
-Zip your mod folder (`my-mod/` with `mod.json` and its patch files) for players to unzip into their loader's
-`mods` folder. Do not include extracted game files: a mod carries only the short pieces of game code in its
-`find` and `anchor` text.
+Zip your mod folder (`my-mod/` with `mod.json` and its patch files). Players drop the zip onto the loader's
+window (or choose it with **Add mod...**), and the loader checks the mod and adds it; unzipping it into the `mods`
+folder by hand also works. Do not include extracted game files: a mod carries only the short pieces of game code in
+its `find` and `anchor` text.
+
+What the loader accepts when a zip or folder is added:
+
+- The mod is each shallowest folder in the zip that holds a `mod.json`: a zip of the mod folder, of the files inside
+  it, or of a repository with the mod in a sub-folder all work. A zip with several mod folders adds them all at once
+  (a pack, up to 50 mods), so a mod and the mods it `requires` can ship together.
+- Everything under the mod's folder is copied (a README or tests may sit beside `mod.json`), marked as downloaded
+  from the internet. Nothing in the zip is run. Shortcut and shell files (`.lnk`, `.url`, `.scf`, `.library-ms`,
+  `.searchConnector-ms`) inside the mod's folder are refused.
+- The new version replaces every installed folder with the same mod `id`, whatever its version, and the replaced
+  folder goes to the Recycle Bin. Keep the `id` the same across releases. A player's on/off switch is kept by `id`
+  too. If you develop in the loader's own `mods` folder, adding a release of the same mod moves your working folder
+  to the Recycle Bin: work in a separate folder (your workspace) instead.
+- The mod must load with this loader's strict checks, or nothing is added. Limits for one add (all zips and folders
+  dropped together): at most 20 items, 32 MB per zip, 32 MB and 5000 files unpacked in all; plain stored or deflated
+  entries (no encryption, no ZIP64); paths inside the mod of at most 200 characters, with names Windows can store.
 
 To hand players a ready-to-play package with the loader and your mods in one zip:
 
