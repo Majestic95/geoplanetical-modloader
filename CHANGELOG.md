@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-03)
 
 - Page scripts: [docs/mod-format.md](docs/mod-format.md#page-scripts) now says how to read the game's language: the game
   writes it into the page as `<html lang>` and changes it there when the player switches language.
