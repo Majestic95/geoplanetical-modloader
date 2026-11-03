@@ -48,6 +48,13 @@ function exactKeys(obj, required, optional, where) {
   for (const k of required) if (!(k in obj)) throw new Error(`${where}: missing field "${k}"`);
 }
 
+// An id (a mod's or a patch's) is text matching ID. Tested as text first: ID.test would turn 123, null or true into
+// "123", "null" or "true" and accept them.
+const checkId = (v, where) => {
+  if (typeof v !== 'string') throw new Error(`${where}: id ${shown(v)} must be text, in quotes`);
+  if (!ID.test(v)) throw new Error(`${where}: id ${shown(v)} must match ${ID}`);
+};
+
 const nonEmpty = (v, where) => {
   if (typeof v !== 'string' || !v) throw new Error(`${where}: must be a non-empty string`);
 };
@@ -55,10 +62,10 @@ const nonEmpty = (v, where) => {
 function loadPatch(file, where) {
   const p = readJson(file);
   exactKeys(p, PATCH_KEYS, PATCH_OPTIONAL, where);
-  if (!ID.test(p.id)) throw new Error(`${where}: id "${p.id}" must match ${ID}`);
+  checkId(p.id, where);
   if (p.finding != null) nonEmpty(p.finding, `${where} finding`);
   nonEmpty(p.effect, `${where} effect`);
-  if (!BUNDLE.test(p.bundle)) throw new Error(`${where}: bundle "${p.bundle}" is not a game bundle name`);
+  if (typeof p.bundle !== 'string' || !BUNDLE.test(p.bundle)) throw new Error(`${where}: bundle ${shown(p.bundle)} is not a game bundle name`);
   if (!Array.isArray(p.edits) || !p.edits.length) throw new Error(`${where}: edits must be a non-empty array`);
   p.edits.forEach((e, k) => {
     const w = `${where} edit ${k}`;
@@ -95,7 +102,7 @@ function loadMod(dir) {
   if ('changes' in m && !(Array.isArray(m.changes) && m.changes.every(entry))) {
     throw new Error(`${file}: changes must be a list of non-empty strings or { group, items } groups of them`);
   }
-  if (!ID.test(m.id)) throw new Error(`${file}: id "${m.id}" must match ${ID}`);
+  checkId(m.id, file);
   for (const k of ['name', 'version', 'description']) nonEmpty(m[k], `${file} ${k}`);
   if ('author' in m) nonEmpty(m.author, `${file} author`);
   if ('requires' in m) {
@@ -147,8 +154,15 @@ function loadMod(dir) {
   return { ...m, dir, patches, scripts };
 }
 
-// A value quoted in a message, anything outside printable ASCII escaped (no line breaks of its own in a message).
-const shown = v => JSON.stringify(v).replace(/[^\x20-\x7e]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+// A value quoted in a message, anything outside printable ASCII escaped (no line breaks of its own in a message) and
+// cut to 80 characters (a mod file's value can be any size, and a message stays in the window for the session).
+const shown = v => {
+  let t;
+  try { t = JSON.stringify(v); } catch { /* nested too deep to write out */ }
+  t = escaped(t ?? `(${Array.isArray(v) ? 'a list' : typeof v})`);
+  return t.length > 80 ? `${t.slice(0, 77)}...` : t;
+};
+const escaped = t => t.replace(/[^\x20-\x7e]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 // A page script's text: a file inside the mod folder (also after following links) of at most MAX_SCRIPT bytes of
 // UTF-8. Read here; parsed by the caller; never run.
@@ -177,6 +191,10 @@ export function changeGroups(m) {
   return out;
 }
 
+// A broken mod's id as its mod.json gives it, when it is a valid id (null otherwise): it names the mod in messages and
+// finds the copies an install replaces, so it is never a number, or text an id cannot be.
+const brokenId = v => (typeof v === 'string' && ID.test(v) ? v : null);
+
 // Every mod folder in `root`: { mods (loaded, sorted by id), broken: [{ folder, id, error }] }. For a mod list that
 // shows a broken mod with its error instead of stopping (launcher/gui.mjs, launcher/console.mjs).
 export function scanMods(root) {
@@ -188,7 +206,7 @@ export function scanMods(root) {
         mods.push(loadMod(join(root, name.name)));
       } catch (e) {
         let id = null;
-        try { id = JSON.parse(readFileSync(join(root, name.name, 'mod.json'), 'utf8'))?.id ?? null; } catch { /* unreadable */ }
+        try { id = brokenId(JSON.parse(readFileSync(join(root, name.name, 'mod.json'), 'utf8'))?.id); } catch { /* unreadable */ }
         broken.push({ folder: name.name, id, error: e.message });
       }
     }
@@ -264,7 +282,7 @@ function selectMods(root, { only = null } = {}) {
         mod = loadMod(join(root, name.name));
       } catch (e) {
         let id = null;
-        try { id = JSON.parse(readFileSync(join(root, name.name, 'mod.json'), 'utf8'))?.id ?? null; } catch { /* unreadable */ }
+        try { id = brokenId(JSON.parse(readFileSync(join(root, name.name, 'mod.json'), 'utf8'))?.id); } catch { /* unreadable */ }
         broken.push({ folder: name.name, id, error: e.message });
         continue;
       }

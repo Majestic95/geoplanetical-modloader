@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- A mod id or a patch id must be text: a number such as `123`, or `null` or `true`, is now refused with a message
+  naming the file (loader 0.4.0 took `123` as the mod "123"). A patch `bundle` written as a list is refused too.
+  (`requires` entries were already checked.) Mods with ids in quotes, which is every mod written to the format, are
+  unaffected.
+
 ## 0.4.0 (2026-11-03)
 
 - Add mods from the window: drop a mod's zip file or folder onto it, or click **Add mod...** and choose the zip (or

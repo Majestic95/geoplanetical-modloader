@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyPatches, buildBundle, hazardsIn, HANDLER_POSTLUDE, MARKER, HANDLER_MARKER } from './patch-engine.mjs';
-import { loadMods, orderMods, requirementProblem, FORMAT } from './mods.mjs';
+import { loadMods, scanMods, orderMods, requirementProblem, FORMAT } from './mods.mjs';
 import { chooseMods } from '../launcher/core.mjs';
 
 let failures = 0;
@@ -114,6 +114,40 @@ try {
   expect('build ids must be strings', () => loadMods(root), { throws: /builds must list Steam build ids/ });
   rmSync(join(root, 'numbuild'), { recursive: true });
   rmSync(join(root, 'bad-bundle'), { recursive: true });
+
+  // Ids are text: a value the ID pattern would accept once turned into text (123, null, true) is refused, and so are
+  // lists and objects.
+  for (const [label, bad] of [['123', 123], ['null', null], ['true', true], ['[]', []], ['{}', {}], ['["ok-a"]', ['ok-a']]]) {
+    writeMod('id-type', { ...goodMod('id-type'), id: bad }, goodPatch);
+    expect(`a mod id that is not text is refused: ${label}`, () => scanMods(root),
+      { check: r => !r.mods.some(x => x.dir === join(root, 'id-type')) &&
+        r.broken.some(b => b.folder === 'id-type' && /id .* must be text, in quotes/.test(b.error) && b.id === null) });
+    writeMod('id-type', goodMod('id-type'), { ...goodPatch, id: bad });
+    expect(`a patch id that is not text is refused: ${label}`, () => loadMods(root, { only: ['id-type'] }), { throws: /id-type\/patches\/p\.json: id .* must be text, in quotes/ });
+    // (requires entries were already checked as text: a guard that they stay so)
+    writeMod('id-type', { ...goodMod('id-type'), requires: [bad] }, goodPatch);
+    expect(`a requires entry that is not text is refused: ${label}`, () => loadMods(root, { only: ['id-type'] }), { throws: /requires must be a list of mod ids/ });
+  }
+  writeMod('id-type', { ...goodMod('id-type'), id: 123 }, goodPatch);
+  expect('loading every mod names the mod whose id is not text', () => loadMods(root), { throws: /id 123 must be text, in quotes/ });
+  writeMod('id-type', goodMod('id-type'), { ...goodPatch, bundle: ['simulation-worker.bundle.js'] });
+  expect('a broken mod with a text id keeps it (an install finds the copy to replace by it)', () => scanMods(root).broken,
+    { check: b => b.length === 1 && b[0].id === 'id-type' && b[0].folder === 'id-type' });
+  expect('a bundle written as a list is refused', () => loadMods(root, { only: ['id-type'] }), { throws: /bundle \["simulation-worker\.bundle\.js"\] is not a game bundle name/ });
+  writeMod('id-type', { ...goodMod('id-type'), id: 'Bad' }, goodPatch);
+  expect('a text id that does not match keeps its message, and is not kept as the broken mod\'s id', () => scanMods(root).broken,
+    { check: b => b.length === 1 && /id "Bad" must match/.test(b[0].error) && b[0].id === null });
+  writeMod('id-type', { ...goodMod('id-type'), id: ['x'.repeat(500)] }, goodPatch);
+  expect('a long value is cut in the message', () => scanMods(root).broken,
+    { check: b => b.length === 1 && b[0].error.length < 400 && /\.\.\. must be text/.test(b[0].error) });
+  let deep = '"x"';
+  for (let i = 0; i < 20000; i++) deep = `[${deep}]`;
+  writeFileSync(join(root, 'id-type', 'mod.json'), JSON.stringify({ ...goodMod('id-type'), id: 0 }).replace('"id":0', `"id":${deep}`));
+  expect('a value nested too deep to write out is named by its kind', () => scanMods(root).broken,
+    { check: b => b.length === 1 && /id \(a list\) must be text/.test(b[0].error) });
+  writeMod('id-type', goodMod('id-type'), goodPatch);
+  expect('a text id still loads', () => loadMods(root, { only: ['id-type'] })[0].id, { check: id => id === 'id-type' });
+  rmSync(join(root, 'id-type'), { recursive: true });
 
   // Format, author, optional finding.
   const { finding, ...noFinding } = goodPatch;

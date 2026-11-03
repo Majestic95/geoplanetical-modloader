@@ -67,7 +67,7 @@ A mod with only a page script (format 2):
 
 | Field | Required | Meaning |
 |---|---|---|
-| `id` | yes | Lower-case letters, digits and `-`, starting with a letter or digit, at most 64 characters. Unique among installed mods. |
+| `id` | yes | Text (in quotes) of lower-case letters, digits and `-`, starting with a letter or digit, at most 64 characters. Unique among installed mods. A number such as `123`, or `null` or `true`, is not an id. |
 | `name` | yes | Shown to players. |
 | `version` | yes | Shown to players. Any non-empty text; [semantic versioning](https://semver.org) is recommended. |
 | `description` | yes | Non-empty text. |
@@ -76,7 +76,7 @@ A mod with only a page script (format 2):
 | `scripts` | no (format 2) | Non-empty list of at most 20 page script paths, relative to the mod folder, each listed once: `.js` files run in the game's window, in this order. A path is made of letters, digits, `_`, `.` and `-`, with `/` between folders, and each folder and file name starts with a letter, digit or `_` (`page/labels.js`). See [Page scripts](#page-scripts). A mod that uses it declares `"format": 2`. |
 | `author` | no | Shown to players beside the mod's name. |
 | `format` | no | The mod format the mod is written for: 1 or 2. Defaults to 1; a mod with `scripts` must say 2. See [Format versions](#format-versions). |
-| `requires` | no | Ids of mods that must be loaded with this one. They load before it. |
+| `requires` | no | Ids (text) of mods that must be loaded with this one. They load before it. |
 | `changes` | no | The changelog the launcher shows. Each entry is a sentence, or `{ "group": "Heading", "items": [sentences] }`. |
 
 Finding the build id: Steam records it in `steamapps/appmanifest_940230.acf` (`"buildid"`), and the loader shows it
@@ -103,9 +103,9 @@ every edit and every page script has been checked against each of them.
 
 | Field | Required | Meaning |
 |---|---|---|
-| `id` | yes | Same rules as a mod id. Unique within the mod. |
+| `id` | yes | Same rules as a mod id (text). Unique within the mod. |
 | `effect` | yes | Non-empty text describing the change. |
-| `bundle` | yes | The game code file the edits apply to: the name of a file in the game's `renderer` folder: lower-case letters, digits and `-`, then `.bundle.js`, such as `simulation-worker.bundle.js`. |
+| `bundle` | yes | The game code file the edits apply to: the name (text) of a file in the game's `renderer` folder: lower-case letters, digits and `-`, then `.bundle.js`, such as `simulation-worker.bundle.js`. |
 | `edits` | yes | Non-empty list of edits, applied in order. |
 | `finding` | no | Your own reference for the patch (an issue number or a research note id), or `null`. |
 
