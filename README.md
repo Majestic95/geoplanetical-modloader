@@ -11,8 +11,9 @@ Not affiliated with the developers of Geoplanetical.
 
 ## For players
 
-1. Download the packaged loader (a zip with `GeoplaneticalModLoader.exe`) and unzip it anywhere, or build it from
-   source (below).
+1. Download the packaged loader, `GeoplaneticalModLoader-<version>.zip`, from the
+   [latest release](https://github.com/Majestic95/geoplanetical-modloader/releases/latest) and unzip it anywhere, or
+   build it from source (below).
 2. Run `GeoplaneticalModLoader.exe` and drop each mod's zip (or folder) onto its window, or click **Add mod...**.
    The loader checks the mod, adds it to its `mods` folder and replaces an older version of the same mod.
 3. Switch mods on or off and click **Play with mods**.
