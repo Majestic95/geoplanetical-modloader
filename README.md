@@ -1,0 +1,83 @@
+# Geoplanetical Mod Loader
+
+A mod loader for [Geoplanetical](https://store.steampowered.com/app/940230/). It starts the game with the mods you
+switch on, applying their changes to the game's code in memory. The game's own files are never changed, and
+starting the game from Steam as usual plays it without mods.
+
+The game's built-in mod support covers presentation, not the game's rules. This loader lets mods change how the
+simulation works: economics, politics, war, anything in the game's code.
+
+Not affiliated with the developers of Geoplanetical.
+
+## For players
+
+1. Download the packaged loader (a zip with `GeoplaneticalModLoader.exe`) and unzip it anywhere, or build it from
+   source (below).
+2. Unzip each mod you want into its `mods` folder.
+3. Run `GeoplaneticalModLoader.exe`, switch mods on or off, and click **Play with mods**.
+
+The included `README.txt` covers saves, updates and what to do when something goes wrong.
+
+- **Windows and Steam only.** The game must be installed through Steam; the loader starts it through Steam.
+- **Single player only.** A modded game's simulation differs from an unmodded one, so it cannot join unmodded
+  multiplayer sessions.
+- **Saves:** a save made with mods needs the same mods to load correctly.
+- **Game updates:** each mod states the game builds it was made for. After an update, a mod waits until its author
+  releases a version for the new build; the loader shows which mods are ready.
+- The executable is not code-signed, so Windows asks for confirmation the first time.
+
+## For mod authors
+
+A mod is plain data: a `mod.json` manifest and patch files of exact find-and-replace edits on the game's code,
+each pinned to nearby stable text. The loader checks every edit before the game starts and refuses the whole mod
+if anything does not match exactly, so a game update can never make a mod patch the wrong code.
+
+- [docs/mod-format.md](docs/mod-format.md): the format specification (fields, anchors, determinism, load order,
+  requirements, conflicts).
+- [docs/authoring.md](docs/authoring.md): writing, testing, releasing and porting a mod with the tools here.
+
+## How it works
+
+1. The loader reads the original game code from the game's `resources/app.asar` (read only) and applies the
+   enabled mods' edits to it in memory. Every edit must match exactly once, near its anchor; replacements that
+   would add non-deterministic code (time, randomness, page state, timers) are refused.
+2. It starts the game through Steam with Chromium's remote-debugging port on 127.0.0.1, waits for each game
+   worker that a mod changes, and runs the patched code in that worker in place of the original before the
+   original runs.
+3. It checks inside each worker that the patched code is the code serving the game, and stays attached until the
+   game closes, so a worker that restarts during play is patched again. If a check fails, the window shows a red
+   warning.
+
+Source layout:
+
+| Folder | Contents |
+|---|---|
+| `patcher/` | Mod loading and validation (`mods.mjs`), the patch engine (`patch-engine.mjs`), game detection (`game.mjs`), the launch-and-attach runtime (`runner.mjs`, `session.mjs`, `cdp.mjs`), the author command-line tools `build.mjs` and `launch.mjs`, and tests |
+| `launcher/` | The player launcher: a window served on 127.0.0.1 (`gui.mjs`, `gui-page.mjs`), a text menu (`console.mjs`), shared steps (`core.mjs`), and the packager (`package.mjs`) |
+| `tools/` | Author tools for reading the game's minified code and porting mods to new game builds |
+| `docs/` | Format specification and authoring guide |
+
+## Building from source
+
+Requires Node.js 22.15 or later on Windows.
+
+```
+npm ci
+npm test                                # engine, loader and port-tool tests
+node patcher/test-harness.mjs --dir <empty scratch folder>   # runtime swap against headless Chrome
+node launcher/main.mjs                  # run the launcher from source (mods from ./mods)
+npm run package                         # build dist/package/Geoplanetical Mod Loader/ and its zip
+```
+
+## Changes
+
+See [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+The code, tools and documentation in this repository are dedicated to the public domain under
+[CC0 1.0 Universal](LICENSE). You may copy, change and distribute them, including in your own mods and tools, for any
+purpose, without asking permission or giving credit.
+
+This does not cover Geoplanetical itself or anything taken from it. Mods for the loader are licensed by their own
+authors.

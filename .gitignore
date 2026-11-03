@@ -1,0 +1,8 @@
+node_modules/
+dist/
+__pycache__/
+*.log
+# Local development: the mods the dev launcher loads, extracted game code, launcher state
+/mods/
+.modding/
+launcher-settings.json
