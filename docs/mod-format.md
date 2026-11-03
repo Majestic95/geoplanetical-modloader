@@ -141,8 +141,8 @@ an isolated world of their own: they share the page's elements with the game, bu
 cannot see or call the game's objects or functions, including the game's own functions for saves, settings, files and
 the Workshop, and the game's code cannot see it. Scripts of other mods are walled off the same way. So a page script
 can read what the page shows and add or change elements, but it cannot change the simulation, saves or settings.
-A script that needs something only the game's code knows (its language setting, its data) has to read it from the
-page's elements instead.
+A script that needs something only the game's code knows (its data) has to read it from the page's elements instead;
+for the game's language, see **The game's language** below.
 
 **Where it runs.** In the game's main page (`renderer/index.html`), in its top frame only. Never in the simulation or
 any other worker, and never in a frame inside the page.
@@ -171,6 +171,31 @@ is not a `.js` file, is not UTF-8 text, is over the size limits, has a path that
 listed twice (also in another letter case), lies outside the mod folder (also through a link), or does not parse as
 the body of a function (where `return` at the top level is allowed and `import`, `export` and top-level `await` are
 not). The loader parses scripts; it never runs them itself.
+
+**The game's language.** The game writes its language into the page: `<html lang="...">`, that is
+`document.documentElement.lang`. It sets it when its main code starts (after its language files have loaded, usually
+after `DOMContentLoaded`) and again whenever the player changes the language in its settings (the page is not
+reloaded). The codes are the game's own: `en`, `fr`, `de`, `es`, `it`, `pt-BR`, `nl`,
+`pl`, `cs`, `hu`, `uk`, `ru`, `tr`, `id`, `zh-Hans`, `ja`, `ko` and `th` (builds 26368058 and 26391432). Before the
+game's code has run, the attribute holds the page's default, `en`, so the first read can be `en` for a player of
+another language, and the game also sets the attribute to the value it already has. A script started at the beginning
+of a page load must wait for the page's root element, then read the language and watch it, redrawing its text each
+time (it may be told the same code twice):
+
+```js
+const showLanguage = code => { /* replace (do not add to) your text, in `code` */ };
+const start = () => {
+  const read = () => showLanguage(document.documentElement.lang);
+  read();
+  new MutationObserver(read).observe(document.documentElement, { attributes: true, attributeFilter: ['lang'] });
+};
+if (document.documentElement) start(); else document.addEventListener('DOMContentLoaded', start, { once: true });
+```
+
+This is the game's behaviour, not a promise of the loader: check it on each game build, as for any element you use.
+Another mod's script could change the attribute too (all scripts share the page's elements); a mod should never
+write it. A mod that adds text only to the game's own screens (a panel, a tooltip) draws once those screens exist,
+and by then the game has set its language.
 
 **What the loader cannot check, and you must keep to.**
 - Add or change only what the screen shows, with elements of your own where you can.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Page scripts: [docs/mod-format.md](docs/mod-format.md#page-scripts) now says how to read the game's language: the game
+  writes it into the page as `<html lang>` and changes it there when the player switches language.
 - **Programs:** the window can start another program with the mods switched on here, such as a multiplayer launcher.
   The player clicks **Add program...** once and chooses the program's `.exe`; its **Play with** button then starts it
   as `<program> --loader "<the loader's folder>"`, in a console window of its own. The program reads the mods folder
