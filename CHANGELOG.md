@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 (not yet released)
+## 0.4.0 (2026-11-03)
 
 - Add mods from the window: drop a mod's zip file or folder onto it, or click **Add mod...** and choose the zip (or
   the `mod.json` inside a folder). The loader checks the whole mod with its strict reader before anything in the
