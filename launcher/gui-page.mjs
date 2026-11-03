@@ -58,12 +58,15 @@ export default String.raw`<!doctype html>
   .error { color: var(--bad); margin-top: 8px; }
   .hidden { display: none !important; }
   body.dropping main { outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: 10px; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; max-width: 640px; }
+  dialog::backdrop { background: rgba(0,0,0,.55); }
+  dialog p { margin: 0 0 10px; }
 </style>
 </head>
 <body>
 <main>
   <header><h1>Geoplanetical Mod Loader</h1><span class="chip" id="version"></span><span class="chip warn hidden" id="dry">Dry run</span></header>
-  <p class="sub">Starts Geoplanetical through Steam with the mods you switch on. Single player only. Game files are never changed.</p>
+  <p class="sub">Starts Geoplanetical through Steam with the mods you switch on (single player), or hands them to a program you add below. Game files are never changed.</p>
 
   <div id="banner" class="banner hidden"></div>
 
@@ -91,10 +94,25 @@ export default String.raw`<!doctype html>
   <div id="mods"></div>
   <div id="broken"></div>
 
+  <div class="row" style="margin-top:18px">
+    <div class="label" style="margin:0">Programs</div>
+    <span style="flex:1"></span>
+    <button class="btn" id="add-program">Add program&hellip;</button>
+  </div>
+  <div class="mod-note" style="margin:4px 0 10px">Other programs that start the game with the mods switched on here, such as a multiplayer launcher: click Add program and choose its .exe file. Add only programs you trust: unlike a mod, a program can do anything on your PC.</div>
+  <div id="programs"></div>
+
   <section class="card">
     <details id="log-box"><summary>Details (log)</summary><pre class="log" id="log"></pre></details>
   </section>
 </main>
+
+<dialog id="ask">
+  <p id="ask-text"></p>
+  <p class="path" id="ask-path"></p>
+  <p class="mod-note" id="ask-note"></p>
+  <div class="row"><span style="flex:1"></span><button class="btn" id="ask-no">Cancel</button><button class="btn" id="ask-yes"></button></div>
+</dialog>
 
 <div class="bar"><div class="inner">
   <button class="btn primary" id="play">Play with mods</button>
@@ -109,7 +127,7 @@ export default String.raw`<!doctype html>
 <script>
 (function () {
   var token = new URLSearchParams(location.search).get('t');
-  var st = null, modsKey = '', openMods = {}, gone = false, lastLogSeq = -1, adding = false;
+  var st = null, modsKey = '', programsKey = '', openMods = {}, gone = false, lastLogSeq = -1, adding = false;
   var $ = function (id) { return document.getElementById(id); };
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 
@@ -138,6 +156,7 @@ export default String.raw`<!doctype html>
     var ready = s.phase === 'ready';
     $('quit').disabled = s.phase === 'building';
     $('add').disabled = $('refresh').disabled = !ready || adding || gone;
+    $('add-program').disabled = !ready || gone;
 
     // Game card
     var gs = $('game-status'), note = '';
@@ -159,6 +178,8 @@ export default String.raw`<!doctype html>
     // Mods (rebuilt only when they change, so open changelogs stay open)
     var key = JSON.stringify([s.mods, s.broken, ready, s.game && s.game.build]);
     if (key !== modsKey) { modsKey = key; renderMods(s, ready); }
+    var pkey = JSON.stringify([s.programs, ready, gone]);
+    if (pkey !== programsKey) { programsKey = pkey; renderPrograms(s, ready); }
 
     // Banner and play button
     var on = s.mods.filter(function (m) { return m.fits && m.enabled; }).length;
@@ -243,7 +264,51 @@ export default String.raw`<!doctype html>
     });
   }
 
+  // One card per program: its name, its full path (the file the button starts), Play with and Remove.
+  function renderPrograms(s, ready) {
+    var box = $('programs'); box.textContent = '';
+    s.programs.forEach(function (p) {
+      var card = el('section', 'card'), head = el('div', 'mod-head');
+      head.appendChild(el('span', 'mod-name', p.name));
+      if (p.problem) head.appendChild(el('span', 'chip bad', 'Cannot start'));
+      var gap = el('span'); gap.style.flex = '1'; head.appendChild(gap);
+      var go = el('button', 'btn', 'Play with ' + p.name);
+      go.disabled = !ready || !!p.problem || gone;
+      go.onclick = function () { startProgram(p); };
+      var rm = el('button', 'btn', 'Remove');
+      rm.disabled = !ready || gone;
+      rm.onclick = function () {
+        ask('Remove ' + p.name + ' from this list?', p.exe, 'The program itself is not deleted.', 'Remove', function () {
+          api('POST', 'program-remove', { exe: p.exe });
+        });
+      };
+      head.appendChild(go); head.appendChild(rm);
+      card.appendChild(head);
+      card.appendChild(el('div', 'path mod-note', p.exe));
+      if (p.problem) card.appendChild(el('div', 'mod-note', 'It cannot be started: ' + p.problem + '. Remove it, or add it again from where it is now.'));
+      box.appendChild(card);
+    });
+  }
+  // A program the player did not choose in this window (an entry another program or a person wrote into
+  // launcher-settings.json) is started only after its full path is shown and confirmed, once.
+  function startProgram(p) {
+    if (p.confirmed) return api('POST', 'program-start', { exe: p.exe });
+    ask('Start this program?', p.exe, 'It was added to the settings of the loader from outside this window, not chosen here. ' +
+      'Start it only if you installed it yourself and trust it.', 'Start it', function () {
+      api('POST', 'program-start', { exe: p.exe, confirmed: true });
+    });
+  }
+  // A question in the page itself (not the browser confirm(), which would stop the polling meanwhile).
+  function ask(text, path, note, yes, then) {
+    var d = $('ask');
+    $('ask-text').textContent = text; $('ask-path').textContent = path; $('ask-note').textContent = note; $('ask-yes').textContent = yes;
+    $('ask-yes').onclick = function () { d.close(); then(); };
+    $('ask-no').onclick = function () { d.close(); };
+    if (!d.open) d.showModal();
+  }
+
   $('play').onclick = function () { api('POST', 'start'); };
+  $('add-program').onclick = function () { api('POST', 'program-add'); };
   $('use').onclick = function () { api('POST', 'gamedir', { dir: $('dir').value }); };
   $('browse').onclick = function () { api('POST', 'browse'); };
   $('add').onclick = function () { api('POST', 'add'); };
@@ -345,7 +410,8 @@ export default String.raw`<!doctype html>
   function closed() {
     gone = true;
     banner('info', 'The loader has closed. You can close this window.');
-    ['play', 'quit', 'open-mods', 'open-log', 'add', 'refresh'].forEach(function (id) { $(id).disabled = true; });
+    ['play', 'quit', 'open-mods', 'open-log', 'add', 'refresh', 'add-program'].forEach(function (id) { $(id).disabled = true; });
+    renderPrograms(st || { programs: [] }, false);
     setTimeout(function () { window.close(); }, 400);
   }
   // Three failed polls in a row (not one) mean the launcher has gone.

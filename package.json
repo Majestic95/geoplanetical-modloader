@@ -1,6 +1,6 @@
 {
   "name": "geoplanetical-modloader",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "engines": {
     "node": ">=22.15"
@@ -16,7 +16,7 @@
     "url": "https://github.com/Majestic95/geoplanetical-modloader/issues"
   },
   "scripts": {
-    "test": "node patcher/test-engine.mjs && node launcher/test-install.mjs && node tools/test-port-patches.mjs",
+    "test": "node patcher/test-engine.mjs && node launcher/test-install.mjs && node launcher/test-programs.mjs && node tools/test-port-patches.mjs",
     "package": "node launcher/package.mjs"
   },
   "devDependencies": {

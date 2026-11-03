@@ -17,12 +17,15 @@ Not affiliated with the developers of Geoplanetical.
 2. Run `GeoplaneticalModLoader.exe` and drop each mod's zip (or folder) onto its window, or click **Add mod...**.
    The loader checks the mod, adds it to its `mods` folder and replaces an older version of the same mod.
 3. Switch mods on or off and click **Play with mods**.
+4. To play the same mods through another program, such as a multiplayer launcher, click **Add program...** once and
+   choose its `.exe`; its **Play with** button then starts it with the mods switched on in the loader.
 
 The included `README.txt` covers saves, updates and what to do when something goes wrong.
 
 - **Windows and Steam only.** The game must be installed through Steam; the loader starts it through Steam.
-- **Single player only.** A modded game's simulation differs from an unmodded one, so it cannot join unmodded
-  multiplayer sessions.
+- **Play with mods is single player.** A modded game's simulation differs from an unmodded one, so it cannot join
+  unmodded multiplayer sessions. A separate multiplayer program added under **Programs** can play the mods with
+  others who use the same ones.
 - **Saves:** a save made with mods needs the same mods to load correctly.
 - **Game updates:** each mod states the game builds it was made for. After an update, a mod waits until its author
   releases a version for the new build; the loader shows which mods are ready.
@@ -38,7 +41,8 @@ the game's code, saves and settings.
 
 - [docs/mod-format.md](docs/mod-format.md): the format specification (fields, anchors, determinism, page scripts,
   load order, requirements, conflicts).
-- [docs/authoring.md](docs/authoring.md): writing, testing, releasing and porting a mod with the tools here.
+- [docs/authoring.md](docs/authoring.md): writing, testing, releasing and porting a mod with the tools here, and
+  [what the loader gives a program](docs/authoring.md#programs) started from its window.
 
 ## How it works
 

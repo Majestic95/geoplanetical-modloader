@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Programs:** the window can start another program with the mods switched on here, such as a multiplayer launcher.
+  The player clicks **Add program...** once and chooses the program's `.exe`; its **Play with** button then starts it
+  as `<program> --loader "<the loader's folder>"`, in a console window of its own. The program reads the mods folder
+  and the switches and starts the game itself; the loader does not. A program's installer can add an entry to
+  `launcher-settings.json`; the loader then shows its full path and asks once before the first start. A program is
+  refused when the loader's own Play would be (the game running or being updated, switched-on mods that cannot load
+  together). See [docs/authoring.md](docs/authoring.md#programs).
 - A mod id or a patch id must be text: a number such as `123`, or `null` or `true`, is now refused with a message
   naming the file (loader 0.4.0 took `123` as the mod "123"). A patch `bundle` written as a list is refused too.
   (`requires` entries were already checked.) Mods with ids in quotes, which is every mod written to the format, are

@@ -159,3 +159,55 @@ lists your mod as not made for this game version until you port it:
 3. For single names, `python -I <loader>/tools/rename-map.py <old bundle> <new bundle> NAME ...` finds what a
    function or variable is called in the new build.
 4. Copy the ported patches in, set `builds` to the new build, build (step 5) and play-test again (step 6).
+
+## Programs
+
+A **program** is a separate application that starts the game with the loader's mods, such as a multiplayer launcher.
+It is not a mod and is not installed into the `mods` folder: the player adds it in the loader's window with **Add
+program...** (choosing its `.exe` file where they unzipped it), and the window then shows a **Play with** button
+named after it. The loader contains no code for any particular program; everything a program gets from the loader
+is listed here.
+
+**How the loader starts it.** As
+
+```
+<program>.exe --loader "<the loader's folder>"
+```
+
+with the program's own folder as the working folder, through Windows' ShellExecute (as Explorer starts a program): a
+console program gets a console window of its own. (Windows shows no warning for a downloaded program started this
+way; the loader asks the player itself, below.) The loader passes no other argument, and starts nothing else: it does not build the mods or start the
+game for a program. Your program starts the game itself (through Steam, `steam -applaunch 940230`).
+
+**What the loader's folder holds.**
+- `mods\`: one folder per mod, in the [mod format](mod-format.md). Read the mods as the loader does: the same checks,
+  the same load order, and a mod the loader would play is never left out silently. A mod your program cannot run
+  (a newer format, or a feature such as page scripts that your program does not support) should stop the start with
+  a message naming it, not be skipped.
+- `launcher-settings.json`: the player's switches. A mod is off only when `enabled[<mod id>]` is `false`; a missing
+  or unreadable file switches nothing off. Read it; never write it.
+
+**When the loader refuses.** Before it starts a program, the loader checks what it checks before its own Play: that
+the game was found and is not being updated by Steam, that Geoplanetical is not already running, that the mods
+switched on can load together (no required mod off or missing), and that the switches the window shows are the ones
+saved in `launcher-settings.json`. A program may start with no mod switched on. Until your program exits, or for at
+most a minute after it started, the loader starts neither the game nor another program and does not change the
+switches or the `mods` folder, so the two never start the game at once and your program reads what the player saw.
+
+**Adding your program from its installer.** An installer may add an entry to the `programs` list in
+`launcher-settings.json` (beside the loader's executable):
+
+```json
+{ "programs": [{ "exe": "C:\\Games\\MyProgram\\MyProgram.exe", "name": "My Program" }] }
+```
+
+In JSON each backslash of the path is written twice. `exe` is the program's full path on one of the PC's drives (a
+`.exe` file, not a `\\server` path). `name` (optional, at most 60 characters, no control or direction characters)
+is shown on its button; without it the button shows the file name. Add your entry and keep every other key and entry
+in the file as it is. The loader keeps at most 8 programs and one entry per file, and drops other fields. Do not
+write `confirmed`: it is the loader's record that the player agreed to start that path. Before the first start of an
+entry it did not see the player choose, or of a file Windows marks as downloaded from the internet, the loader shows
+the full path and asks the player to confirm it. This confirmation keeps a player from starting a program they did
+not expect; it is not a protection against a program already on the PC, which could start anything itself. The path
+must be written plainly (no `.` or `..` folders, no `/`, no invisible or direction characters, at most 260
+characters) and must not lie inside the loader's `mods` folder.

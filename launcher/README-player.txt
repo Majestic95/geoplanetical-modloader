@@ -41,6 +41,19 @@ the game through Steam. Without the loader the game is the normal game, and star
 usual plays without mods.
 
 
+PLAYING THROUGH ANOTHER PROGRAM (FOR EXAMPLE MULTIPLAYER)
+--------------------------------------------------------
+Some programs, such as a multiplayer launcher, start the game with the mods switched on in this loader.
+1. Download and unzip the program anywhere, as its author explains.
+2. In the loader's window, under "Programs", click "Add program..." and choose the program's .exe file.
+3. Switch on the mods you want, then click "Play with <the program's name>". The program opens its own
+   window and starts the game; follow what it says there. The loader does not start the game itself.
+Add only programs you trust: unlike a mod, a program can do anything on your PC. If a program added itself
+to the loader, or was downloaded from the internet, the loader shows its full path and asks you once before
+starting it. "Remove" takes a program
+off the list; it does not delete the program.
+
+
 SAVES
 -----
 - Steam Cloud syncs your saves. When you try a new mod, start a new game and save it under a new name

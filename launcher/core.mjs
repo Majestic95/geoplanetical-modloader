@@ -2,8 +2,9 @@
 // the text menu): the files beside the executable, the settings file, the log, building the chosen mods into the
 // game's code (read from the game's app.asar, never written), and starting the game through Steam while serving the
 // patched code to its workers.
-import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync, writeFileSync, appendFileSync, statSync, realpathSync } from 'node:fs';
+import { dirname, join, basename, resolve, isAbsolute, normalize, relative, sep } from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
 import { isSea } from 'node:sea';
@@ -13,7 +14,7 @@ import { findGame, originalBundle } from '../patcher/game.mjs';
 import { launchAndServe } from '../patcher/runner.mjs';
 import { PAGE } from '../patcher/session.mjs';
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 export const PRODUCT = 'Geoplanetical Mod Loader';
 // Packaged: everything sits beside the executable. Development: the repository root (mods/ is the repo's).
 export const BASE = isSea() ? dirname(process.execPath) : join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -37,17 +38,147 @@ export function makeLog(show) {
 // The settings file is the player's to edit: anything but a plain object (or a gameDir that is not text) is ignored.
 export function readSettings() {
   let s;
-  try { s = JSON.parse(readFileSync(SETTINGS, 'utf8')); } catch { return { enabled: {} }; }
-  if (!s || typeof s !== 'object' || Array.isArray(s)) return { enabled: {} };
+  try { s = JSON.parse(readFileSync(SETTINGS, 'utf8')); } catch (e) { return { enabled: {}, programs: [], ...(e.code === 'ENOENT' ? {} : { unreadable: true }) }; }
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return { enabled: {}, programs: [], unreadable: true };
   if (typeof s.gameDir !== 'string') delete s.gameDir;
   if (!s.enabled || typeof s.enabled !== 'object' || Array.isArray(s.enabled)) s.enabled = {};
+  s.programs = cleanPrograms(s.programs);
   return s;
 }
+// Writes the settings (`unreadable` is not a setting); true when written.
 export function saveSettings(s, log) {
-  try { writeFileSync(SETTINGS, JSON.stringify(s, null, 2) + '\n'); } catch (e) { log(`could not save settings: ${e.message}`); }
+  const { unreadable, ...keep } = s;
+  try { writeFileSync(SETTINGS, JSON.stringify(keep, null, 2) + '\n'); return true; } catch (e) { log(`could not save settings: ${e.message}`); return false; }
 }
 
 export const isEnabled = (settings, m) => settings.enabled[m.id] !== false;
+
+// Programs (docs/authoring.md#programs): other programs that start the game with this loader's mods, such as a
+// multiplayer launcher. The player adds one with a file dialog, or a program's installer adds an entry to
+// launcher-settings.json: { "exe": "<full path of the .exe>", "name"?: "<shown on its button>" }. The loader starts
+// it as `<exe> --loader "<this loader's folder>"` and does not start the game itself; the program reads the mods
+// folder and the switches here and starts the game. The loader records the player's consent to start a file as
+// "confirmed": that same path (picked in the dialog, or its full path confirmed before its first start); an entry for
+// another path, or without it, is confirmed again. Installers do not write it.
+export const MAX_PROGRAMS = 8;
+// A name shown on a button: letters, marks, digits, punctuation, symbols and spaces (no control or direction characters).
+const PROGRAM_NAME = /^[\p{L}\p{M}\p{N}\p{P}\p{S} ]{1,60}$/u;
+export function cleanPrograms(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const p of list) {
+    if (!p || typeof p !== 'object' || Array.isArray(p) || typeof p.exe !== 'string' || !p.exe) continue;
+    if (out.some(o => sameExe(o.exe, p.exe)) || out.length >= MAX_PROGRAMS) continue;
+    const name = typeof p.name === 'string' && PROGRAM_NAME.test(p.name.trim()) ? p.name.trim() : null;
+    out.push({ exe: p.exe, ...(name ? { name } : {}), ...(p.confirmed === p.exe ? { confirmed: p.exe } : {}) });
+  }
+  return out;
+}
+export const sameExe = (a, b) => resolve(a).toLowerCase() === resolve(b).toLowerCase();
+export const isConfirmed = p => p.confirmed === p.exe;
+// Its own name, else the file name without .exe, with anything a name cannot hold shown as "?".
+export const programName = p => p.name ||
+  (basename(p.exe).replace(/\.exe$/i, '').replace(/[^\p{L}\p{M}\p{N}\p{P}\p{S} ]/gu, '?').slice(0, 60) || 'program');
+
+// Why the loader will not start `exe`, or null: it must be a .exe file on one of this PC's drives (not a \\server path,
+// also not through a link), written plainly (the path the player is shown is the file that starts), not inside the mods
+// folder (mods are data: a mod cannot bring a program), and not the loader.
+// (\p{C}: control, format such as direction marks and zero-width characters, private-use and unassigned characters)
+const UNSAFE_PATH = /[\p{C}\p{Zl}\p{Zp}]/u;
+export function programProblem(exe) {
+  if (typeof exe !== 'string' || !isAbsolute(exe) || !/^[A-Za-z]:\\/.test(exe)) return 'it is not a full path on this PC';
+  if (exe.length > 260 || UNSAFE_PATH.test(exe) || exe.includes(':', 2) || normalize(exe) !== exe) {
+    return 'its path is not written plainly (choose the file with Add program)';
+  }
+  if (!/\.exe$/i.test(exe)) return 'it is not a program (.exe file)';
+  let st, real;
+  try { st = statSync(exe); real = realpathSync.native(exe); } catch { return 'the file is not there any more'; }
+  if (!st.isFile()) return 'it is not a file';
+  if (!/^[A-Za-z]:\\/.test(real)) return 'it is on another computer (a network share)';
+  if ([exe, real].some(p => { const r = relative(MODS, p); return r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r); })) {
+    return 'it is inside the mods folder (mods cannot bring programs)';
+  }
+  if (sameExe(real, process.execPath)) return 'it is this loader';
+  return null;
+}
+
+// Whether Windows marks `exe` as downloaded from the internet (its Zone.Identifier says so). Such a file is confirmed
+// in the window before its first start even when the player picked it: Windows itself does not ask when a program
+// is started this way.
+export function downloaded(exe) {
+  try { return /ZoneId=[34]/.test(readFileSync(`${exe}:Zone.Identifier`, 'utf8')); } catch { return false; }
+}
+
+// Why program `p` cannot be started now, or null: what can be told without asking Windows (the caller also checks
+// Steam's update state, whether the game runs, and the hand-off below). The same checks as Play, except that a program
+// may run with no mod switched on: it plays the mods the loader would play. `saved`: the switches as
+// launcher-settings.json holds them, which is what the program reads.
+export function programRefusal(p, { confirmed = false, dryRun = false, game, mods, broken = [], settings, saved }) {
+  const name = programName(p);
+  if (dryRun) return 'Dry run: programs are not started.';
+  const problem = programProblem(p.exe);
+  if (problem) return `${name} cannot be started: ${problem} (${p.exe}). Remove it, or add it again from where it is now.`;
+  if (!isConfirmed(p) && !confirmed) return `Confirm that you want to start ${p.exe} first.`;
+  if (!game) return 'Choose the game folder first.';
+  const { error } = chooseMods(mods, settings, game, broken);
+  if (error) return error;
+  if (!sameSwitches(saved, settings.enabled)) {
+    return `The mod switches could not be saved to launcher-settings.json (see the log), and ${name} reads them from there. ` +
+      'Check that the loader\'s folder is not read-only, then try again.';
+  }
+  return null;
+}
+const sameSwitches = (a, b) => {
+  const off = e => Object.keys(e || {}).filter(k => e[k] === false).sort().join('\n');
+  return off(a) === off(b);
+};
+
+// After a program is started it starts the game itself: until HANDOFF_MS have passed, or the program has exited, the
+// loader starts neither the game nor another program and keeps the switches and the mods folder as they are (the
+// program reads them while it starts). `handedOff`: { at, name, pid } of the last start (pid null if unknown).
+export const HANDOFF_MS = 60000;
+export function handOffRefusal(handedOff, now = Date.now(), alive = pidAlive) {
+  if (!handedOff || now - handedOff.at >= HANDOFF_MS) return null;
+  if (handedOff.pid && !alive(handedOff.pid)) return null;
+  return `${handedOff.name} was just started and starts the game itself. Wait for it, or close it first.`;
+}
+const pidAlive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+
+// A command-line argument as Windows programs read it (CommandLineToArgvW): quoted when it holds a space or a quote,
+// with the backslashes before a quote and at the end doubled.
+export const quoteArg = a => (a && !/[\s"]/.test(a) ? a : `"${a.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`);
+
+// Starts `exe --loader "<loader folder>"` in the program's folder through Windows (ShellExecute, as Explorer does): a
+// console program gets a console window of its own. Windows shows no warning for a downloaded program started this way
+// (see downloaded). The command is constant; the paths reach it only through environment variables, which are removed
+// before the program starts, and are taken as they are (Start-Process would read [ and ] in a path as wildcards and
+// could start another file). Resolves { pid } (null when Windows does not say) when started, or { error }. Gives up
+// after `timeoutMs` (a warning nobody answers).
+export const START_TIMEOUT_MS = 120000;
+export function startProgram(exe, loaderDir = BASE, timeoutMs = START_TIMEOUT_MS) {
+  const command = "$ErrorActionPreference = 'Stop'; try { $i = New-Object System.Diagnostics.ProcessStartInfo; " +
+    '$i.FileName = $env:GPML_PROGRAM; $i.Arguments = $env:GPML_PROGRAM_ARGS; $i.WorkingDirectory = $env:GPML_PROGRAM_DIR; ' +
+    '$i.UseShellExecute = $true; Remove-Item Env:GPML_PROGRAM, Env:GPML_PROGRAM_ARGS, Env:GPML_PROGRAM_DIR; ' +
+    "$p = [System.Diagnostics.Process]::Start($i); 'started ' + $(if ($p) { $p.Id } else { '' }) } " +
+    "catch { $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; 'failed: ' + $e.Message }";
+  return new Promise(done => {
+    let out = '';
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, GPML_PROGRAM: exe, GPML_PROGRAM_ARGS: `--loader ${quoteArg(loaderDir)}`, GPML_PROGRAM_DIR: dirname(exe) },
+    });
+    const timer = setTimeout(() => { child.kill(); done({ error: `Windows did not start it within ${timeoutMs / 1000} seconds` }); }, timeoutMs);
+    child.stdout.on('data', d => { out += d; });
+    child.on('error', e => { clearTimeout(timer); done({ error: `PowerShell could not be started (${e.message})` }); });
+    child.on('close', () => {
+      clearTimeout(timer);
+      // The last line is the answer (a profile or module may have printed something before it).
+      const last = out.trim().split(/\r?\n/).pop().trim();
+      const started = last.match(/^started ?(\d*)$/);
+      done(started ? { pid: Number(started[1]) || null } : { error: last.replace(/^failed: /, '') || 'Windows did not start it' });
+    });
+  });
+}
 
 // The mods to load for `game`: those switched on that are made for its build, each after the mods it requires.
 // { chosen } (possibly empty) or { error } when a required mod is off, missing, broken (`broken`: scanMods' list) or

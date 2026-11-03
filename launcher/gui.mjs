@@ -15,7 +15,8 @@ import { scanMods, changeGroups } from '../patcher/mods.mjs';
 import { PAGE as PAGE_SCRIPTS } from '../patcher/session.mjs';
 import { findGame, gameRunning, steamExe } from '../patcher/game.mjs';
 import {
-  VERSION, PRODUCT, MODS, LOG, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
+  VERSION, PRODUCT, MODS, LOG, BASE, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
+  MAX_PROGRAMS, sameExe, isConfirmed, downloaded, programName, programProblem, programRefusal, handOffRefusal, startProgram,
 } from './core.mjs';
 import { installMods, itemsFromPage, readChosen } from './install.mjs';
 import PAGE from './gui-page.mjs';
@@ -62,6 +63,34 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   // problem: the mods may not be active in the game (red); warning: a page script failed, the game runs modded (amber)
   let phase = 'ready', message = null, notice = null, problem = false, warning = false, lastSeen = Date.now(), browsing = false;
   let running = { at: 0, value: false };
+  // starting: a program is being started ; handedOff: { at, name, pid } of the last program started (core.mjs)
+  let starting = false, handedOff = null;
+  // While a program starts, and while it reads the switches and the mods folder after it started, nothing here changes
+  // them and nothing else starts the game.
+  const programBusy = () => (starting ? 'A program is being started: wait for it.' : handOffRefusal(handedOff));
+  // The programs list as the settings file holds it: a program's installer may have added one while the loader is
+  // open, and every change made here is saved at once. Read before each change and each save of the settings.
+  // (Kept as they are when the file does not read as settings, or the last save failed: the list here is then the
+  // newer one.)
+  let lastSaveOk = true;
+  const save = () => { lastSaveOk = saveSettings(settings, log); };
+  const freshPrograms = () => {
+    if (!lastSaveOk) return;
+    const onDisk = readSettings();
+    if (onDisk.unreadable) return;
+    settings.programs = onDisk.programs;
+  };
+  // A program's file is checked for each poll of the window: the answer is kept a few seconds (a sleeping drive), and
+  // not checked again while the mods are built or a game session is served (a slow drive must not hold that up).
+  const problems = new Map();
+  const problemOf = exe => {
+    const known = problems.get(exe);
+    if (phase !== 'ready') return known ? known.problem : null;
+    if (known && Date.now() - known.at < 5000) return known.problem;
+    const problem = programProblem(exe);
+    problems.set(exe, { at: Date.now(), problem });
+    return problem;
+  };
   const gameIsRunning = () => {
     if (Date.now() - running.at > 3000) {
       try { running = { at: Date.now(), value: gameRunning() }; } catch { running = { at: Date.now(), value: false }; }
@@ -85,19 +114,22 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       fits: !!game && m.builds.includes(game.build), enabled: isEnabled(settings, m),
     })),
     broken: broken.map(b => ({ folder: b.folder, error: b.error })),
+    programs: settings.programs.map(p => ({ exe: p.exe, name: programName(p), confirmed: isConfirmed(p), problem: problemOf(p.exe) })),
     log: lines, logSeq,
   });
 
   const useFolder = dir => {
     const g = findGame(dir);
     if (!g) return 'That folder does not hold the game. Choose the folder with Geoplanetical.exe in it.';
-    settings.gameDir = dir; saveSettings(settings, log); game = g;
+    freshPrograms(); settings.gameDir = dir; save(); game = g;
     log(`game folder set: ${dir} (build ${g.build ?? 'unknown'})`);
     return null;
   };
 
   const start = () => {
     if (phase !== 'ready') return 'The loader is busy.';
+    const busy = programBusy();
+    if (busy) return busy;
     if (!game) return 'Choose the game folder first.';
     if (!steam) return 'Steam was not found on this PC. The game must be started through Steam.';
     const { chosen, error } = chooseMods(mods, settings, game, broken);
@@ -141,6 +173,8 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   // Adds mods (launcher/install.mjs): `read` gives the install items. Returns the refusal, or null with `notice` set.
   const add = (read, from) => {
     if (phase !== 'ready') return 'Mods cannot be added while the game is starting or running.';
+    const busy = programBusy();
+    if (busy) return busy;
     let added, kept;
     try { ({ added, kept } = installMods(read(), MODS)); } catch (e) {
       log(`could not add ${from}: ${e.message}`);
@@ -159,6 +193,21 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     notice = `Added ${added.map(a => `${a.name} ${a.version}${a.replaced.length ? ` (replacing ${a.replaced.join(', ')})` : ''}`).join(', ')}.` +
       (added.some(a => a.from.length) ? (kept ? ` The previous copy is kept in ${kept}.` : ' The previous copy is in the Recycle Bin.') : '') +
       (unfit.length ? ` ${unfit.map(a => a.name).join(', ')} ${unfit.length > 1 ? 'are' : 'is'} not made for your game version yet.` : '');
+    return null;
+  };
+
+  // Why program `p` cannot be started now, or null: core.mjs programRefusal, then what needs Steam and Windows.
+  const refuseProgram = (p, confirmed) => {
+    const refusal = programRefusal(p, { confirmed, dryRun, game, mods, broken, settings, saved: readSettings().enabled });
+    if (refusal) return refusal;
+    const name = programName(p);
+    const blocker = programBusy() || launchBlocker(settings, game);
+    if (blocker) return blocker;
+    try { running = { at: Date.now(), value: gameRunning() }; } catch (e) {
+      log(`could not tell whether the game is running: ${e.message}`);
+      return `Could not tell whether Geoplanetical is already running. Close it if it is, then start ${name} again.`;
+    }
+    if (running.value) return `Geoplanetical is already running. Close it, then start ${name} again.`;
     return null;
   };
 
@@ -214,31 +263,40 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       case 'POST /api/toggle': {
         const m = mods.find(x => x.id === body.id);
         if (phase !== 'ready') return reply('Mods cannot be switched while the game is starting or running.');
+        const busy = programBusy();
+        if (busy) return reply(busy);
         if (!m) return reply('No such mod.');
         if (!game || !m.builds.includes(game.build)) return reply(`${m.name} cannot run on this game version.`);
-        settings.enabled[m.id] = !isEnabled(settings, m); saveSettings(settings, log);
+        freshPrograms();
+        settings.enabled[m.id] = !isEnabled(settings, m); save();
         return done();
       }
       case 'POST /api/gamedir': {
         if (phase !== 'ready') return reply('The game folder cannot be changed now.');
+        if (programBusy()) return reply(programBusy());
         const dir = typeof body.dir === 'string' ? body.dir.trim().replace(/^"|"$/g, '') : '';
         const e = dir ? useFolder(dir) : 'Enter the game folder.';
         return e ? reply(e) : done();
       }
       case 'POST /api/browse': {
         if (phase !== 'ready') return reply('The game folder cannot be changed now.');
+        if (programBusy()) return reply(programBusy());
         if (browsing) return reply('A dialog is already open.');
         browsing = true;
         let dir;
         try { dir = await browseFolder(); } finally { browsing = false; } // asynchronous: polling goes on meanwhile
         lastSeen = Date.now();
         if (phase !== 'ready') return reply('The game folder cannot be changed now.');
+        if (programBusy()) return reply(programBusy()); // a program may have been started while the dialog was open
         const e = dir ? useFolder(dir) : null;
         return e ? reply(e) : done();
       }
       case 'POST /api/rescan': {
         if (phase !== 'ready') return reply('Wait until the session is over.');
+        const busy = programBusy();
+        if (busy) return reply(busy);
         game = findGame(settings.gameDir || null); ({ mods, broken } = scanMods(MODS));
+        freshPrograms(); problems.clear();
         return done();
       }
       case 'POST /api/install': {
@@ -247,6 +305,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       }
       case 'POST /api/add': {
         if (phase !== 'ready') return reply('Mods cannot be added while the game is starting or running.');
+        if (programBusy()) return reply(programBusy());
         if (browsing) return reply('A dialog is already open.');
         browsing = true;
         let file;
@@ -257,6 +316,66 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         return e ? reply(e) : done(true);
       }
       case 'POST /api/start': return reply(start());
+      case 'POST /api/program-add': {
+        if (phase !== 'ready') return reply('Programs can be added when no game session is running.');
+        if (browsing) return reply('A dialog is already open.');
+        freshPrograms();
+        if (settings.programs.length >= MAX_PROGRAMS) return reply(`At most ${MAX_PROGRAMS} programs: remove one first.`);
+        browsing = true;
+        let file;
+        try { file = await chooseProgramFile(); } finally { browsing = false; }
+        lastSeen = Date.now();
+        if (!file) return done();
+        if (phase !== 'ready') return reply('Programs can be added when no game session is running.');
+        const problem = programProblem(file);
+        if (problem) return reply(`That cannot be added: ${problem}.`);
+        // Picked in the dialog: the player chose this file, so its first start needs no further confirmation, unless
+        // it was downloaded from the internet (Windows does not ask when it starts this way).
+        freshPrograms();
+        if (settings.programs.length >= MAX_PROGRAMS) return reply(`At most ${MAX_PROGRAMS} programs: remove one first.`);
+        let p = settings.programs.find(o => sameExe(o.exe, file));
+        const known = !!p;
+        if (!p) { p = { exe: file }; settings.programs.push(p); }
+        const fromInternet = downloaded(file);
+        if (fromInternet) delete p.confirmed; else p.confirmed = p.exe;
+        save();
+        if (!known) log(`program added: ${file}${fromInternet ? ' (downloaded from the internet)' : ''}`);
+        notice = (known ? `${programName(p)} is already in the list.` : `Added ${programName(p)} (${file}). Its button starts it with the mods switched on here.`) +
+          (fromInternet ? ' It was downloaded from the internet, so the loader asks you once before it first starts it.' : '');
+        return done(true);
+      }
+      case 'POST /api/program-remove': {
+        if (phase !== 'ready') return reply('Programs can be removed when no game session is running.');
+        freshPrograms();
+        const i = settings.programs.findIndex(p => p.exe === body.exe);
+        if (i < 0) return reply('No such program.');
+        const [p] = settings.programs.splice(i, 1);
+        save();
+        log(`program removed from the list: ${p.exe}`);
+        return done();
+      }
+      case 'POST /api/program-start': {
+        if (phase !== 'ready') return reply('The loader is busy.');
+        freshPrograms();
+        const p = settings.programs.find(x => x.exe === body.exe);
+        if (!p) return reply('No such program.');
+        const refusal = refuseProgram(p, body.confirmed === true);
+        if (refusal) return reply(refusal);
+        if (!isConfirmed(p)) { p.confirmed = p.exe; save(); }
+        const name = programName(p);
+        starting = true;
+        let started;
+        try { started = await startProgram(p.exe); } finally { starting = false; }
+        lastSeen = Date.now();
+        if (started.error) {
+          log(`could not start ${name} (${p.exe}): ${started.error}`);
+          return reply(`${name} could not be started: ${started.error}`);
+        }
+        handedOff = { at: Date.now(), name, pid: started.pid };
+        log(`started ${name} (${p.exe} --loader ${BASE}); it starts the game itself, with the mods switched on here`);
+        notice = `Started ${name}. It starts the game itself, with the mods switched on here: follow its own window. You can close this one.`;
+        return done(true);
+      }
       case 'POST /api/open': {
         const target = body.what === 'log' ? LOG : body.what === 'mods' ? MODS : null;
         if (!target || !existsSync(target)) return reply('Nothing to open yet.');
@@ -346,6 +465,17 @@ async function chooseModFile() {
   const file = await powershell('Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; ' +
     "$d.Title = 'Add a mod: choose its .zip file, or the mod.json inside its folder'; " +
     "$d.Filter = 'Mod (.zip or mod.json)|*.zip;mod.json|All files|*.*'; " +
+    '$f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; ' +
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8; if ($d.ShowDialog($f) -eq "OK") { $d.FileName }');
+  return file || null;
+}
+
+// The Windows file picker for Add program: a program's .exe. Resolves the file, or null if cancelled. The command is
+// constant (no user input).
+async function chooseProgramFile() {
+  const file = await powershell('Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; ' +
+    "$d.Title = 'Add a program that starts the game with these mods (its .exe file)'; " +
+    "$d.Filter = 'Programs (*.exe)|*.exe'; " +
     '$f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; ' +
     '[Console]::OutputEncoding=[Text.Encoding]::UTF8; if ($d.ShowDialog($f) -eq "OK") { $d.FileName }');
   return file || null;
