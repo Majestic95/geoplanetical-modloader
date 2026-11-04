@@ -1,7 +1,8 @@
 // Geoplanetical Mod Loader, the player launcher: finds Geoplanetical through Steam's library list (or a folder the
 // player gives once), lists the mods in the mods folder beside it with an on/off switch and changelog each, builds the
 // chosen mods (each after the mods it requires) into the game's own code (read from the game's app.asar, never
-// written), starts the game through Steam and stays attached while it runs. Opens a window by default
+// written), starts the game (the loader's frozen copy of its pinned build, or the live game through Steam) and stays
+// attached while it runs. Opens a window by default
 // (launcher/gui.mjs); --console gives the text menu (launcher/console.mjs).
 // Packaged as a single windowed executable by launcher/package.mjs; for development: node launcher/main.mjs
 //
@@ -15,6 +16,10 @@ import { makeLog } from './core.mjs';
 import { runConsole } from './console.mjs';
 import { runGui, messageBox } from './gui.mjs';
 import { LOG } from './core.mjs';
+
+// Windows looks for a program started by name (tasklist, clip, powershell) in the current folder first unless this is
+// set: a file of that name beside the loader must never be what runs.
+process.env.NoDefaultCurrentDirectoryInExePath = '1';
 
 const argv = process.argv.slice(2);
 const arg = name => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : null);

@@ -1,11 +1,11 @@
-// Runtime patcher: launches Geoplanetical through Steam with Chromium remote debugging, swaps the patched bundles
-// into their workers before the originals run (patcher/session.mjs), and checks the marker inside each worker; the
-// mods' page scripts run in the game page. Stays attached until the game closes: later worker restarts are patched
-// too, and the page scripts run again on every page load.
+// Runtime patcher: launches Geoplanetical through Steam (or the loader's frozen copy) with Chromium remote debugging,
+// swaps the patched bundles into their workers before the originals run (patcher/session.mjs), and checks the marker
+// inside each worker; the mods' page scripts run in the game page. Stays attached until the game closes: later worker
+// restarts are patched too, and the page scripts run again on every page load.
 //
 // The command-line launcher for mod authors (players use launcher/). Run from the workspace that holds mods/.
 // Usage: node <loader>/patcher/launch.mjs [--port 9333] [--mods <dir>] [--mod <id> ...] [--unpatched] [--dry-run]
-//          [--require-patched] [--game-dir <folder>]
+//          [--require-patched] [--game-dir <folder> | --frozen]
 //   --mods       the folder holding the mod folders (default: mods/ in the current folder)
 //   --mod        load only these mods, in this order (default: every mod); name the mods they require too, which
 //                then load first
@@ -13,15 +13,18 @@
 //   --dry-run    run every check and build the payloads, but do not launch
 //   --require-patched  exit 1 if any patched bundle's worker is not verified as running patched code (test runs)
 //   --game-dir   the game's folder, instead of finding it through Steam's library list
+//   --frozen     play the loader's frozen copy of the pinned build (patcher/frozen.mjs; set it up in the loader's
+//                window), started from its folder with its own saves, instead of the Steam game
 //
 // Single player only: a patched game diverges from unpatched multiplayer peers. The game must not already be running
 // (the launcher attaches only to a game it starts).
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 import { buildBundle } from './patch-engine.mjs';
 import { modArgs, argValue, MODS_DIR } from './build.mjs';
 import { loadMods } from './mods.mjs';
 import { findGame, gameRunning, steamExe, originalBundle } from './game.mjs';
 import { launchAndServe } from './runner.mjs';
+import { PIN, frozenPlaces, checkFolder, checkProblem, steamRunning, copySavesOnce } from './frozen.mjs';
 import { PAGE } from './session.mjs';
 
 const argv = process.argv.slice(2);
@@ -35,8 +38,19 @@ function fail(msg) {
 }
 
 async function main() {
-  const game = findGame(argValue(argv, '--game-dir'));
-  if (!game) fail('Geoplanetical not found in the Steam libraries (or in --game-dir)');
+  const places = opt('--frozen') ? frozenPlaces() : null;
+  if (opt('--frozen') && argValue(argv, '--game-dir')) fail('--frozen and --game-dir cannot be combined');
+  if (opt('--frozen') && !places) fail('the Windows folder for program data (LOCALAPPDATA) is not set; there is no frozen copy');
+  let game;
+  if (places) {
+    // The frozen copy's build is the pin its files match, not an appmanifest's.
+    const r = await checkFolder(places.game);
+    if (!r.ok) fail(`${checkProblem(r, `The loader's frozen copy (${places.game})`)} Set it up in the loader's window first.`);
+    game = { dir: places.game, build: PIN.build, updating: false, targetBuild: null };
+  } else {
+    game = findGame(argValue(argv, '--game-dir'));
+    if (!game) fail('Geoplanetical not found in the Steam libraries (or in --game-dir)');
+  }
   const build = game.build;
   if (!build) fail(`the installed build is unknown (no Steam appmanifest beside ${game.dir}); mods cannot be matched to it`);
   if (game.updating && !opt('--dry-run')) fail(`Steam has an update pending for the game (target build ${game.targetBuild}); let it finish first`);
@@ -64,13 +78,25 @@ async function main() {
     scripts = mods.flatMap(m => m.scripts.map(s => ({ mod: m.id, path: s.path, text: s.text })));
     if (scripts.length) log(`page: ${scripts.length} script(s): ${scripts.map(s => `${s.mod}/${s.path}`).join(', ')}`);
   }
-  log(`mode ${opt('--unpatched') ? 'UNPATCHED baseline' : 'patched'}, build ${build}, port ${port}, game ${game.dir}`);
+  log(`mode ${opt('--unpatched') ? 'UNPATCHED baseline' : 'patched'}, build ${build}${places ? ' (frozen copy)' : ''}, port ${port}, game ${game.dir}`);
   log('single player only: a patched game diverges from unpatched multiplayer peers');
   if (opt('--dry-run')) return log('dry run: not launching');
 
-  const steam = steamExe();
-  if (!steam) fail('Steam not found (HKCU\\Software\\Valve\\Steam SteamExe)');
-  await launchAndServe({ steam, port, payloads, scripts, log, onSwap, onExit: code => { log(code ? 'patcher exiting (error)' : 'patcher exiting'); process.exit(code); } });
+  let steam = null, frozen = null;
+  if (places) {
+    // Started outside Steam, the game needs Steam running, or it would run without the player's account.
+    if (!steamRunning()) fail('Steam is not running. Start Steam and sign in, then try again.');
+    const saves = await copySavesOnce(places.data).catch(e => fail(`could not copy the Steam saves into the frozen copy's saves (${e.code || e.message})`));
+    if (!saves.already) log(`copied ${saves.files} save file(s) of the Steam game into the frozen copy's saves (once): ${join(places.data, 'saves')}`);
+    // Checked again as the last step before the start, and started from the folder as checked.
+    const r = await checkFolder(places.game);
+    if (!r.ok) fail(checkProblem(r, `The loader's frozen copy (${places.game})`));
+    frozen = { dir: r.dir, dataDir: places.data };
+  } else {
+    steam = steamExe();
+    if (!steam) fail('Steam not found (HKCU\\Software\\Valve\\Steam SteamExe)');
+  }
+  await launchAndServe({ steam, frozen, port, payloads, scripts, log, onSwap, onExit: code => { log(code ? 'patcher exiting (error)' : 'patcher exiting'); process.exit(code); } });
   log('attached; leave this running while you play. Ctrl+C detaches (later worker restarts are then unpatched).');
 }
 

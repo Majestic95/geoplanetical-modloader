@@ -1,11 +1,13 @@
 // Launch-and-attach, shared by the dev launcher (patcher/launch.mjs) and the player launcher (launcher/main.mjs):
-// starts Geoplanetical through Steam with Chromium remote debugging, swaps the patched bundles into their workers
-// (patcher/session.mjs), and stays attached until the game closes, re-attaching if the socket drops or the game's
+// starts Geoplanetical through Steam (or the loader's frozen copy: patcher/frozen.mjs) with Chromium remote debugging,
+// swaps the patched bundles into their workers (patcher/session.mjs), and stays attached until the game closes, re-attaching if the socket drops or the game's
 // startup guard relaunches it.
 import { spawn } from 'node:child_process';
 import { connect } from './cdp.mjs';
 import { attachAndServe, waitFor } from './session.mjs';
 import { APP_ID, gameRunning } from './game.mjs';
+import { startFrozen, GAME_EXE } from './frozen.mjs';
+import { join } from 'node:path';
 
 // The game's startup guard can relaunch it (electron/main.js:388-392: app.relaunch keeps process.argv, minus the
 // overlay flag, so the debug port returns). That leaves a short gap with no process: look a few times before
@@ -23,15 +25,21 @@ const debugPort = port => waitFor('the debug port', async () => {
   return res.ok ? res.json() : null;
 }, 180000);
 
-// Launches through Steam and attaches. scripts: page scripts [{ mod, path, text }] (patcher/session.mjs). onSwap({ bundle,
-// status }) reports each worker swap and the page scripts (bundle PAGE); onExit(code) is called when the game closes (0)
-// or the patcher can no longer serve it (1).
-export async function launchAndServe({ steam, port, payloads, scripts = [], log, onSwap, onExit }) {
+// Launches through Steam, or with `frozen` ({ dir, dataDir }: the loader's frozen copy, checked by the caller just
+// before, with Steam running) from that folder, and attaches. scripts: page scripts [{ mod, path, text }]
+// (patcher/session.mjs). onSwap({ bundle, status }) reports each worker swap and the page scripts (bundle PAGE);
+// onExit(code) is called when the game closes (0) or the patcher can no longer serve it (1).
+export async function launchAndServe({ steam, frozen = null, port, payloads, scripts = [], log, onSwap, onExit }) {
   const pageState = {}; // which page load the page scripts last ran in, across re-attaches (patcher/session.mjs)
   // A failed start is logged; the wait for the debug port below then times out with its own error.
-  spawn(steam, ['-applaunch', APP_ID, `--remote-debugging-port=${port}`], { detached: true, stdio: 'ignore' })
-    .on('error', e => log(`Steam could not be started: ${e.message}`)).unref();
-  log(`launched through Steam: ${steam} -applaunch ${APP_ID} --remote-debugging-port=${port}`);
+  if (frozen) {
+    const args = startFrozen({ dir: frozen.dir, dataDir: frozen.dataDir, port, onError: e => log(`the frozen game could not be started (${e.code || e.message})`) });
+    log(`started the frozen game: ${join(frozen.dir, GAME_EXE)} ${args.join(' ')}`);
+  } else {
+    spawn(steam, ['-applaunch', APP_ID, `--remote-debugging-port=${port}`], { detached: true, stdio: 'ignore' })
+      .on('error', e => log(`Steam could not be started: ${e.message}`)).unref();
+    log(`launched through Steam: ${steam} -applaunch ${APP_ID} --remote-debugging-port=${port}`);
+  }
   const version = await debugPort(port);
   log(`debug port up: ${version.Browser}`);
   await attach({ wsUrl: version.webSocketDebuggerUrl, port, payloads, scripts, pageState, log, onSwap, onExit });

@@ -61,17 +61,46 @@ export default String.raw`<!doctype html>
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; max-width: 640px; }
   dialog::backdrop { background: rgba(0,0,0,.55); }
   dialog p { margin: 0 0 10px; }
+  .choice { display: flex; gap: 10px; flex-wrap: wrap; }
+  .pick { font: inherit; flex: 1; min-width: 240px; text-align: left; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); padding: 10px 14px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+  .pick:hover:not(:disabled) { border-color: var(--accent); }
+  .pick[aria-checked="true"] { border-color: var(--accent); background: #10233a; box-shadow: inset 0 0 0 1px var(--accent); }
+  .pick:disabled { opacity: .55; cursor: not-allowed; }
+  .pick-name { font-weight: 650; }
+  .pick-sub { color: var(--muted); font-size: 13px; }
+  progress { flex: 1; min-width: 200px; height: 10px; accent-color: var(--accent); }
 </style>
 </head>
 <body>
 <main>
   <header><h1>Geoplanetical Mod Loader</h1><span class="chip" id="version"></span><span class="chip warn hidden" id="dry">Dry run</span></header>
-  <p class="sub">Starts Geoplanetical through Steam with the mods you switch on (single player), or hands them to a program you add below. Game files are never changed.</p>
+  <p class="sub">Starts Geoplanetical with the mods you switch on (single player): your frozen copy of the game, or the live Steam game. Or hands them to a program you add below. Game files are never changed.</p>
 
   <div id="banner" class="banner hidden"></div>
 
   <section class="card" id="game-card">
     <div class="label">Game</div>
+    <div class="choice" role="radiogroup" aria-label="Which game to play">
+      <button class="pick" id="pick-frozen" role="radio"><span class="pick-name">Frozen game</span><span class="pick-sub" id="pick-frozen-sub"></span></button>
+      <button class="pick" id="pick-live" role="radio"><span class="pick-name">Live Steam game</span><span class="pick-sub" id="pick-live-sub"></span></button>
+    </div>
+    <div id="frozen-box" style="margin-top:12px">
+      <div class="row"><span id="frozen-status"></span><span class="path" id="frozen-path"></span></div>
+      <div id="frozen-note" class="mod-note"></div>
+      <div id="frozen-get" class="row hidden" style="margin-top:8px">
+        <span class="mod-note" id="get-label" style="margin:0"></span>
+        <button class="btn" id="freeze-live">Copy from your Steam game</button>
+        <button class="btn" id="freeze-download">Download with Steam</button>
+        <button class="btn" id="freeze-folder">Copy from a folder&hellip;</button>
+      </div>
+      <div id="frozen-task" class="hidden" style="margin-top:8px">
+        <div class="mod-note" id="task-text"></div>
+        <div class="path hidden" id="task-command" style="margin-top:4px"></div>
+        <div class="row" style="margin-top:6px"><progress id="task-bar" max="1"></progress><button class="btn" id="freeze-cancel">Cancel</button></div>
+      </div>
+      <div class="row" style="margin-top:8px"><span class="mod-note" id="saves-note" style="margin:0;flex:1"></span><button class="btn hidden" id="open-saves">Open its saves</button></div>
+    </div>
+    <div id="live-box" class="hidden" style="margin-top:12px">
     <div class="row"><span id="game-status"></span><span class="path" id="game-path"></span></div>
     <div id="game-note" class="mod-note"></div>
     <div id="folder" class="hidden" style="margin-top:10px">
@@ -81,6 +110,7 @@ export default String.raw`<!doctype html>
         <button class="btn" id="use">Use this folder</button>
         <button class="btn" id="browse">Browse&hellip;</button>
       </div>
+    </div>
     </div>
   </section>
 
@@ -158,25 +188,70 @@ export default String.raw`<!doctype html>
     $('add').disabled = $('refresh').disabled = !ready || adding || gone;
     $('add-program').disabled = !ready || gone;
 
-    // Game card
+    // Game card: the choice (frozen or live), then the chosen game's details.
+    var frozenOn = s.play !== 'live', f = s.frozen, t = s.task;
+    var running = s.gameRunning && ready ? 'Geoplanetical is running now: close it before pressing Play.' : '';
+    var noSteam = s.steamFound ? '' : 'Steam was not found on this PC; the game needs Steam.';
+    $('pick-frozen').setAttribute('aria-checked', String(frozenOn));
+    $('pick-live').setAttribute('aria-checked', String(!frozenOn));
+    $('pick-frozen').disabled = $('pick-live').disabled = !ready || gone;
+    var fLabel = { ready: 'Ready', missing: 'Not set up', other: 'Older version', broken: 'Needs fixing', unreadable: 'Could not be read', checking: 'Checking\u2026', unavailable: 'Unavailable' }[f.status] || f.status;
+    $('pick-frozen-sub').textContent = 'Game ' + s.pin.version + ' (build ' + s.pin.build + '): ' + (t ? 'being set up' : fLabel.toLowerCase()) + '. Steam updates never change it.';
+    $('pick-live-sub').textContent = s.live ? 'Build ' + (s.live.build || 'unknown') + (s.live.updating ? ', being updated by Steam' : '') + '. Changes whenever Steam updates the game.' : 'Not found.';
+    $('frozen-box').classList.toggle('hidden', !frozenOn);
+    $('live-box').classList.toggle('hidden', frozenOn);
+
+    var fsc = $('frozen-status');
+    fsc.className = 'chip ' + (t ? '' : f.status === 'ready' ? 'ok' : f.status === 'checking' ? '' : f.status === 'missing' || f.status === 'other' ? 'warn' : 'bad');
+    fsc.textContent = t ? 'Setting up\u2026' : fLabel;
+    $('frozen-path').textContent = f.status === 'ready' ? (f.dir || '') : '';
+    var fnote = f.status === 'missing'
+      ? 'The frozen game is your own copy of game ' + s.pin.version + ', kept by the loader so that a Steam update never stops the mods. Get it once, in one of these ways (about 3.9 GB):'
+      : f.status === 'ready' || f.status === 'checking' ? '' : (f.problem || '');
+    $('frozen-note').textContent = [fnote, f.status === 'ready' ? running : '', noSteam].filter(Boolean).join(' ');
+    // (also when it is ready: getting it again replaces it, should it ever be damaged)
+    $('frozen-get').classList.toggle('hidden', !!t || f.status === 'checking' || f.status === 'unavailable');
+    $('get-label').textContent = f.status === 'ready' ? 'Get it again (replaces it):' : '';
+    var liveFits = !!(s.live && s.live.build === s.pin.build && !s.live.updating);
+    $('freeze-live').disabled = !ready || !liveFits || gone;
+    $('freeze-live').title = liveFits ? '' : 'Your Steam game is another version now: download with Steam instead.';
+    $('freeze-download').disabled = !ready || !s.steamFound || gone;
+    $('freeze-folder').disabled = !ready || gone;
+    $('frozen-task').classList.toggle('hidden', !t);
+    if (t) {
+      var text = 'Starting\u2026', bar = $('task-bar'), sized = t.total && (t.step === 'copying' || t.step === 'checking' || t.step === 'checking-download');
+      if (t.step === 'waiting') text = t.clipboard ? 'Steam\u2019s console is opening. Click in it, press Ctrl+V, then Enter. The command (already copied):' : 'Steam\u2019s console is opening. Type this command in it, then press Enter:';
+      else if (t.step === 'downloading') text = 'Steam is downloading game ' + s.pin.version + (t.mb ? ' (' + t.mb + ' MB)' : '') + '. Its console says when it is done; the loader takes it from there.';
+      else if (t.step === 'checking-source') text = 'Checking the game files to copy\u2026';
+      else if (t.step === 'copying') text = 'Copying the game: ' + gb(t.done) + ' of ' + gb(t.total) + ' GB';
+      else if (t.step === 'checking') text = 'Checking the copy: ' + gb(t.done) + ' of ' + gb(t.total) + ' GB';
+      else if (t.step === 'checking-download') text = 'Checking Steam\u2019s download: ' + gb(t.done) + ' of ' + gb(t.total) + ' GB';
+      $('task-text').textContent = text;
+      $('task-command').textContent = t.command || '';
+      $('task-command').classList.toggle('hidden', !(t.step === 'waiting' && t.command));
+      if (sized) { bar.max = t.total; bar.value = t.done; } else bar.removeAttribute('value');
+    }
+    $('saves-note').textContent = f.savesCopied
+      ? 'The frozen game keeps its own saves, apart from the Steam game\u2019s. Steam Cloud does not back them up.'
+      : 'The frozen game keeps its own saves. The first time you play it, your Steam saves are copied into it; after that the two lists are separate, and Steam Cloud does not back up the frozen game\u2019s saves.';
+    $('open-saves').classList.toggle('hidden', !f.savesCopied);
+
     var gs = $('game-status'), note = '';
-    if (!s.game) {
+    if (!s.live) {
       gs.className = 'chip bad'; gs.textContent = 'Not found'; $('game-path').textContent = s.savedDir || '';
       note = s.savedDir ? 'The saved folder does not hold the game.' : 'Geoplanetical was not found in your Steam libraries.';
     } else {
-      $('game-path').textContent = s.game.dir;
-      if (s.game.updating) {
+      $('game-path').textContent = s.live.dir;
+      if (s.live.updating) {
         gs.className = 'chip warn'; gs.textContent = 'Steam is updating';
-        note = 'Steam is updating the game' + (s.game.targetBuild ? ' to build ' + s.game.targetBuild : '') + '. Wait for it to finish, then reopen the loader.';
-      } else { gs.className = 'chip ok'; gs.textContent = 'Build ' + (s.game.build || 'unknown'); }
-      if (s.gameRunning && s.phase === 'ready') note = (note ? note + ' ' : '') + 'Geoplanetical is running now: close it before pressing Play.';
+        note = 'Steam is updating the game' + (s.live.targetBuild ? ' to build ' + s.live.targetBuild : '') + '. Wait for it to finish, then reopen the loader.';
+      } else { gs.className = 'chip ok'; gs.textContent = 'Build ' + (s.live.build || 'unknown'); }
     }
-    if (!s.steamFound) note = (note ? note + ' ' : '') + 'Steam was not found on this PC; the game must be started through Steam.';
-    $('game-note').textContent = note;
-    $('folder').classList.toggle('hidden', !!(s.game && s.game.build) || !ready);
+    $('game-note').textContent = [note, running, noSteam].filter(Boolean).join(' ');
+    $('folder').classList.toggle('hidden', !!(s.live && s.live.build) || !ready);
 
     // Mods (rebuilt only when they change, so open changelogs stay open)
-    var key = JSON.stringify([s.mods, s.broken, ready, s.game && s.game.build]);
+    var key = JSON.stringify([s.mods, s.broken, ready, s.game && s.game.build, s.play, s.live && s.live.build]);
     if (key !== modsKey) { modsKey = key; renderMods(s, ready); }
     var pkey = JSON.stringify([s.programs, ready, gone]);
     if (pkey !== programsKey) { programsKey = pkey; renderPrograms(s, ready); }
@@ -185,9 +260,11 @@ export default String.raw`<!doctype html>
     var on = s.mods.filter(function (m) { return m.fits && m.enabled; }).length;
     var play = $('play'), pn = $('play-note');
     if (s.phase === 'ready') {
-      play.disabled = !s.game || !s.steamFound || on === 0 || !!(s.game && s.game.updating);
+      var notReady = !!(s.game && s.game.frozen && !s.game.ready);
+      play.disabled = !s.game || !s.steamFound || on === 0 || !!(s.game && s.game.updating) || notReady || !!t;
       play.textContent = s.dryRun ? 'Check mods (dry run)' : 'Play with mods';
-      pn.textContent = on ? on + ' mod' + (on > 1 ? 's' : '') + ' on' : 'Switch a mod on to play with it';
+      pn.textContent = t ? 'Wait until the frozen game is set up' : notReady ? 'Get the frozen game first (above)'
+        : on ? on + ' mod' + (on > 1 ? 's' : '') + ' on, ' + (frozenOn ? 'frozen game' : 'live Steam game') : 'Switch a mod on to play with it';
       if (adding) banner('info', 'Adding the mod\u2026');
       else if (s.message) banner('warn', s.message);
       else banner('ok', s.notice);
@@ -232,7 +309,12 @@ export default String.raw`<!doctype html>
       sw.onclick = function () { api('POST', 'toggle', { id: m.id }); };
       head.appendChild(sw);
       card.appendChild(head);
-      if (!m.fits) card.appendChild(el('div', 'mod-note', 'Made for game build ' + m.builds.join(', ') + (s.game ? '; your game is ' + s.game.build : '') + '. The game has updated: wait for an updated version of this mod.'));
+      if (!m.fits) {
+        var made = 'Made for game build ' + m.builds.join(', ');
+        card.appendChild(el('div', 'mod-note', !s.game ? made + '.'
+          : s.game.frozen ? made + '; the frozen game is build ' + s.game.build + '. Wait for an updated version of this mod' + (s.live && m.builds.indexOf(s.live.build) >= 0 ? ', or play the live Steam game, which it is made for.' : '.')
+          : made + '; your Steam game is build ' + s.game.build + '. The game has updated: wait for an updated version of this mod' + (m.builds.indexOf(s.pin.build) >= 0 ? ', or play the frozen game, which it is made for.' : '.')));
+      }
       if (m.scripts) card.appendChild(el('div', 'mod-note', 'Also runs its own script in the game\u2019s window.'));
       if (m.requires.length) {
         var needs = m.requires.map(function (id) {
@@ -308,6 +390,14 @@ export default String.raw`<!doctype html>
   }
 
   $('play').onclick = function () { api('POST', 'start'); };
+  $('pick-frozen').onclick = function () { api('POST', 'play', { which: 'frozen' }); };
+  $('pick-live').onclick = function () { api('POST', 'play', { which: 'live' }); };
+  $('freeze-live').onclick = function () { api('POST', 'freeze-live'); };
+  $('freeze-download').onclick = function () { api('POST', 'freeze-download'); };
+  $('freeze-folder').onclick = function () { api('POST', 'freeze-folder'); };
+  $('freeze-cancel').onclick = function () { api('POST', 'freeze-cancel'); };
+  $('open-saves').onclick = function () { api('POST', 'open', { what: 'saves' }); };
+  function gb(n) { return (n / 1073741824).toFixed(1); }
   $('add-program').onclick = function () { api('POST', 'program-add'); };
   $('use').onclick = function () { api('POST', 'gamedir', { dir: $('dir').value }); };
   $('browse').onclick = function () { api('POST', 'browse'); };
@@ -410,7 +500,8 @@ export default String.raw`<!doctype html>
   function closed() {
     gone = true;
     banner('info', 'The loader has closed. You can close this window.');
-    ['play', 'quit', 'open-mods', 'open-log', 'add', 'refresh', 'add-program'].forEach(function (id) { $(id).disabled = true; });
+    ['play', 'quit', 'open-mods', 'open-log', 'add', 'refresh', 'add-program', 'pick-frozen', 'pick-live', 'freeze-live', 'freeze-download', 'freeze-folder', 'freeze-cancel', 'open-saves']
+      .forEach(function (id) { $(id).disabled = true; });
     renderPrograms(st || { programs: [] }, false);
     setTimeout(function () { window.close(); }, 400);
   }

@@ -7,6 +7,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 export const APP_ID = '940230';
 
@@ -27,10 +28,16 @@ export function steamExe() {
   return exe && existsSync(exe) ? exe : null;
 }
 
+// Steam's own folder (where it keeps its logs and its console downloads), or null.
+export function steamPath() {
+  const p = regValue('HKCU\\Software\\Valve\\Steam', 'SteamPath');
+  return p ? p.replace(/\//g, '\\') : null;
+}
+
 // Every Steam library folder: Steam's own folder plus those listed in steamapps/libraryfolders.vdf.
 export function steamLibraries() {
-  const steamPath = regValue('HKCU\\Software\\Valve\\Steam', 'SteamPath');
-  const roots = new Set(steamPath ? [steamPath.replace(/\//g, '\\')] : []);
+  const steamDir = steamPath();
+  const roots = new Set(steamDir ? [steamDir] : []);
   roots.add('C:\\Program Files (x86)\\Steam');
   // Keyed case-insensitively: Windows paths, and Steam records the same folder in either case.
   const libs = new Map(), add = p => libs.has(p.toLowerCase()) || libs.set(p.toLowerCase(), p);
@@ -100,7 +107,13 @@ export function readAsarFile(asarPath, innerPath) {
     }
     if (node.unpacked) throw new Error(`${innerPath} is unpacked outside the archive; not supported`);
     const size = Number(node.size), data = Buffer.alloc(size);
-    readSync(fd, data, 0, size, base + Number(node.offset));
+    if (readSync(fd, data, 0, size, base + Number(node.offset)) !== size) throw new Error(`${innerPath} is cut short in ${asarPath}`);
+    // The index carries each file's SHA-256 (as the game's archives do): the text read must be that file. With the
+    // index itself checked (patcher/frozen.mjs), this makes it the pinned build's.
+    const integrity = node.integrity;
+    if (integrity?.algorithm === 'SHA256' && createHash('sha256').update(data).digest('hex') !== integrity.hash) {
+      throw new Error(`${innerPath} in ${asarPath} does not match the archive's own record of it (a damaged game file)`);
+    }
     return data;
   } finally {
     closeSync(fd);

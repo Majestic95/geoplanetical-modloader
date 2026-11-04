@@ -1,10 +1,11 @@
 // What the player launcher does, shared by its two front ends (launcher/gui.mjs, the window; launcher/console.mjs,
 // the text menu): the files beside the executable, the settings file, the log, building the chosen mods into the
-// game's code (read from the game's app.asar, never written), and starting the game through Steam while serving the
-// patched code to its workers.
+// game's code (read from the game's app.asar, never written), and starting the game (through Steam, or the loader's
+// frozen copy of the pinned build) while serving the patched code to its workers.
 import { readFileSync, writeFileSync, appendFileSync, statSync, realpathSync } from 'node:fs';
 import { dirname, join, basename, resolve, isAbsolute, normalize, relative, sep } from 'node:path';
 import { spawn } from 'node:child_process';
+import { createServer as createNetServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
 import { isSea } from 'node:sea';
@@ -12,9 +13,10 @@ import { buildBundle } from '../patcher/patch-engine.mjs';
 import { requirementProblem, orderMods } from '../patcher/mods.mjs';
 import { findGame, originalBundle } from '../patcher/game.mjs';
 import { launchAndServe } from '../patcher/runner.mjs';
+import { PIN, checkFolder, checkProblem, copySavesOnce, steamRunning, errorCode } from '../patcher/frozen.mjs';
 import { PAGE } from '../patcher/session.mjs';
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 export const PRODUCT = 'Geoplanetical Mod Loader';
 // Packaged: everything sits beside the executable. Development: the repository root (mods/ is the repo's).
 export const BASE = isSea() ? dirname(process.execPath) : join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,6 +43,7 @@ export function readSettings() {
   try { s = JSON.parse(readFileSync(SETTINGS, 'utf8')); } catch (e) { return { enabled: {}, programs: [], ...(e.code === 'ENOENT' ? {} : { unreadable: true }) }; }
   if (!s || typeof s !== 'object' || Array.isArray(s)) return { enabled: {}, programs: [], unreadable: true };
   if (typeof s.gameDir !== 'string') delete s.gameDir;
+  if (s.play !== 'live' && s.play !== 'frozen') delete s.play;
   if (!s.enabled || typeof s.enabled !== 'object' || Array.isArray(s.enabled)) s.enabled = {};
   s.programs = cleanPrograms(s.programs);
   return s;
@@ -51,7 +54,29 @@ export function saveSettings(s, log) {
   try { writeFileSync(SETTINGS, JSON.stringify(keep, null, 2) + '\n'); return true; } catch (e) { log(`could not save settings: ${e.message}`); return false; }
 }
 
+// One loader at a time (the window or the text menu): two would both start the game on the same debug port and serve
+// it twice, or both work on the frozen game's folder. The pipe keeps the name of the 0.2 launcher (and the window
+// profile below its folder) so an older copy and this one exclude each other. Resolves true when this process holds
+// it (until it exits).
+const LOCK_PIPE = '\\\\.\\pipe\\geoplanetical-mod-launcher';
+export function takeLock() {
+  const lock = createNetServer();
+  // (unref: the lock alone does not keep the process running)
+  return new Promise(resolve => { lock.once('error', () => resolve(false)); lock.listen(LOCK_PIPE, () => { lock.unref(); resolve(true); }); });
+}
+
 export const isEnabled = (settings, m) => settings.enabled[m.id] !== false;
+
+// Which game Play starts (launcher-settings.json `play`): the frozen copy of the pinned build (patcher/frozen.mjs),
+// the default, or the live Steam game.
+export const playChoice = settings => (settings.play === 'live' ? 'live' : 'frozen');
+// The frozen copy as a game: its build is the pin (its files are checked against it before each start), whatever
+// state the copy is in; `ready` says whether the last check found it in place.
+export const frozenGame = (places, ready) => places && {
+  dir: places.game, dataDir: places.data, build: PIN.build, frozen: true, ready: !!ready, updating: false, targetBuild: null,
+};
+// The game Play and the programs use: the frozen game, or the live one (findGame's, or null when not found).
+export const chosenGame = (settings, frozen, live) => (playChoice(settings) === 'live' ? live : frozen);
 
 // Programs (docs/authoring.md#programs): other programs that start the game with this loader's mods, such as a
 // multiplayer launcher. The player adds one with a file dialog, or a program's installer adds an entry to
@@ -120,6 +145,7 @@ export function programRefusal(p, { confirmed = false, dryRun = false, game, mod
   if (problem) return `${name} cannot be started: ${problem} (${p.exe}). Remove it, or add it again from where it is now.`;
   if (!isConfirmed(p) && !confirmed) return `Confirm that you want to start ${p.exe} first.`;
   if (!game) return 'Choose the game folder first.';
+  if (game.frozen && !game.ready) return FROZEN_NOT_READY;
   const { error } = chooseMods(mods, settings, game, broken);
   if (error) return error;
   if (!sameSwitches(saved, settings.enabled)) {
@@ -148,14 +174,18 @@ const pidAlive = pid => { try { process.kill(pid, 0); return true; } catch (e) {
 // with the backslashes before a quote and at the end doubled.
 export const quoteArg = a => (a && !/[\s"]/.test(a) ? a : `"${a.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`);
 
-// Starts `exe --loader "<loader folder>"` in the program's folder through Windows (ShellExecute, as Explorer does): a
+// A program's arguments: the loader's folder, and the frozen copy's folder when the player plays the frozen game
+// (docs/authoring.md#programs).
+export const programArgs = (loaderDir, gameDir = null) => `--loader ${quoteArg(loaderDir)}${gameDir ? ` --game ${quoteArg(gameDir)}` : ''}`;
+
+// Starts `exe --loader "<loader folder>" [--game "<frozen copy>"]` in the program's folder through Windows (ShellExecute, as Explorer does): a
 // console program gets a console window of its own. Windows shows no warning for a downloaded program started this way
 // (see downloaded). The command is constant; the paths reach it only through environment variables, which are removed
 // before the program starts, and are taken as they are (Start-Process would read [ and ] in a path as wildcards and
 // could start another file). Resolves { pid } (null when Windows does not say) when started, or { error }. Gives up
 // after `timeoutMs` (a warning nobody answers).
 export const START_TIMEOUT_MS = 120000;
-export function startProgram(exe, loaderDir = BASE, timeoutMs = START_TIMEOUT_MS) {
+export function startProgram(exe, loaderDir = BASE, { timeoutMs = START_TIMEOUT_MS, gameDir = null } = {}) {
   const command = "$ErrorActionPreference = 'Stop'; try { $i = New-Object System.Diagnostics.ProcessStartInfo; " +
     '$i.FileName = $env:GPML_PROGRAM; $i.Arguments = $env:GPML_PROGRAM_ARGS; $i.WorkingDirectory = $env:GPML_PROGRAM_DIR; ' +
     '$i.UseShellExecute = $true; Remove-Item Env:GPML_PROGRAM, Env:GPML_PROGRAM_ARGS, Env:GPML_PROGRAM_DIR; ' +
@@ -165,7 +195,7 @@ export function startProgram(exe, loaderDir = BASE, timeoutMs = START_TIMEOUT_MS
     let out = '';
     const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], {
       windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
-      env: { ...process.env, GPML_PROGRAM: exe, GPML_PROGRAM_ARGS: `--loader ${quoteArg(loaderDir)}`, GPML_PROGRAM_DIR: dirname(exe) },
+      env: { ...process.env, GPML_PROGRAM: exe, GPML_PROGRAM_ARGS: programArgs(loaderDir, gameDir), GPML_PROGRAM_DIR: dirname(exe) },
     });
     const timer = setTimeout(() => { child.kill(); done({ error: `Windows did not start it within ${timeoutMs / 1000} seconds` }); }, timeoutMs);
     child.stdout.on('data', d => { out += d; });
@@ -198,9 +228,20 @@ export function chooseMods(mods, settings, game, broken = []) {
   try { return { chosen: orderMods(on) }; } catch (e) { return { error: `${e.message}.` }; }
 }
 
+// Why Play has nothing to play when chooseMods chose no mod: mods switched on but made for another build (say which
+// game they are made for), or no mod switched on at all.
+export function noModsMessage(mods, settings, game) {
+  const on = mods.filter(m => isEnabled(settings, m));
+  if (!on.length) return 'No mod is switched on. Start the game from Steam as usual to play without mods.';
+  const other = game.frozen ? null : on.some(m => m.builds.includes(PIN.build)) ? ' Play the frozen game instead: they are made for it.' : null;
+  return `None of the mods switched on is made for this game version (build ${game.build}).${other ?? ' Wait for updated versions of them.'}`;
+}
+
 // Steam installs a pending update before it starts the game, so the mods would meet a different game version. Returns
 // the reason the game cannot be started now, or null.
+// The frozen copy is not Steam's to update: its checks are prepareFrozen's.
 export function launchBlocker(settings, game) {
+  if (game?.frozen) return null;
   const now = findGame(settings.gameDir || null);
   if (now?.updating) {
     return `Steam is updating Geoplanetical${now.targetBuild ? ` (to build ${now.targetBuild})` : ''}. Let the update finish ` +
@@ -208,6 +249,39 @@ export function launchBlocker(settings, game) {
   }
   if (!now || now.build !== game.build) return 'The game changed since the loader opened. Close the loader and open it again.';
   return null;
+}
+
+export const FROZEN_NOT_READY = 'The frozen game is not set up yet: get it first (Frozen game, above), or choose the live Steam game.';
+
+// Right before the frozen copy starts (Play, or a program given --game), in this order: for the loader's own Play
+// (`saves`), the Steam game's saves are copied into the copy's saves the first time; Steam must run (the game started
+// outside Steam would otherwise run without the player's account); and last the copy must match the pin (its sizes,
+// the archive's index and every file outside the archive: patcher/frozen.mjs), so that nothing slow runs between that
+// check and the start. Resolves { dir } (the checked folder as it is on disk: start it from there, at once) or
+// { error } (why it cannot start).
+export async function prepareFrozen(game, log, { saves = true, steam = true } = {}) {
+  if (saves) {
+    try {
+      const s = await copySavesOnce(game.dataDir);
+      if (!s.already) log(`copied ${s.files} save file(s) of the Steam game into the frozen game's own saves (once; ${(s.bytes / 1024 ** 2).toFixed(0)} MB)`);
+    } catch (e) {
+      log(`could not copy the Steam saves: ${errorCode(e)}`);
+      return { error: `Your Steam saves could not be copied into the frozen game's saves (${errorCode(e)}). Nothing was started; try again.` };
+    }
+  }
+  if (steam) {
+    try { if (!steamRunning()) return { error: 'Steam is not running. Start Steam and sign in, then try again: the frozen game needs it for your account.' }; } catch (e) {
+      log(`could not tell whether Steam is running: ${e.message}`);
+      return { error: 'Could not tell whether Steam is running. Start Steam and sign in, then try again.' };
+    }
+  }
+  const r = await checkFolder(game.dir);
+  if (!r.ok) {
+    log(`frozen copy check failed: ${r.reason}${r.code ? ` (${r.code})` : ''}`);
+    return { error: `${checkProblem(r, 'The frozen game')} Get it again (Frozen game, above).` };
+  }
+  log(`frozen copy checked: build ${PIN.build} (game ${PIN.version})`);
+  return { dir: r.dir };
 }
 
 // Builds the chosen mods into the game's code and checks it compiles: { payloads, scripts } or { error }. The page
@@ -233,13 +307,14 @@ export function buildMods(game, chosen, log) {
   return { payloads, scripts };
 }
 
-// Starts the game through Steam and serves it until it closes. Resolves { problem, warning, message } at the end of the
+// Starts the game through Steam (or `frozen`, { dir, dataDir }: the frozen copy, after prepareFrozen) and serves it
+// until it closes. Resolves { problem, warning, message } at the end of the
 // session; onSwap({ bundle, status }) also reports each worker swap and the page scripts (bundle PAGE) as they happen.
 // A page script runs beside the game's own code, so one that fails is a warning (what a mod shows on screen may be
 // missing), not a problem (the game possibly unmodded). A script that threw stays a warning for the session; one that
 // did not run stops being one once a later page load runs it.
-export async function playSession({ steam, port, payloads, scripts = [], chosen, log, onSwap: report = () => {} }) {
-  log(`starting Geoplanetical through Steam with ${chosen.map(m => m.name).join(', ')}`);
+export async function playSession({ steam, frozen = null, port, payloads, scripts = [], chosen, log, onSwap: report = () => {} }) {
+  log(`starting Geoplanetical ${frozen ? `from the frozen copy (build ${PIN.build})` : 'through Steam'} with ${chosen.map(m => m.name).join(', ')}`);
   let problem = false, pageFailed = false, pageMissing = false;
   const confirmed = new Set();
   const onSwap = ({ bundle, status, detail }) => {
@@ -257,7 +332,7 @@ export async function playSession({ steam, port, payloads, scripts = [], chosen,
     else log(`THE MODS ARE NOT ACTIVE in ${bundle} (${status}): this session plays the unmodded game. Close the game and report this, with launcher.log.`);
   };
   await new Promise(resolve => {
-    launchAndServe({ steam, port, payloads, scripts, log, onSwap, onExit: code => { if (code) problem = true; resolve(); } })
+    launchAndServe({ steam, frozen, port, payloads, scripts, log, onSwap, onExit: code => { if (code) problem = true; resolve(); } })
       .then(() => log('attached to the game; waiting for the mods to start inside it'), e => {
         log(`could not start the game with the mods: ${e.message}. If the game still opens, it is running WITHOUT the mods: close it.`);
         problem = true; resolve();

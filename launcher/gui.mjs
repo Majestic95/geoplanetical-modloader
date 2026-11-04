@@ -6,18 +6,20 @@
 // exits on Quit or when the window has been gone for 15 seconds (150 in a default-browser tab, which is throttled when
 // hidden). Only one launcher runs at a time (a named-pipe lock).
 import { createServer } from 'node:http';
-import { createServer as createNetServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { scanMods, changeGroups } from '../patcher/mods.mjs';
 import { PAGE as PAGE_SCRIPTS } from '../patcher/session.mjs';
-import { findGame, gameRunning, steamExe } from '../patcher/game.mjs';
+import { findGame, gameRunning, steamExe, steamPath } from '../patcher/game.mjs';
+import { PIN, frozenPlaces } from '../patcher/frozen.mjs';
 import {
   VERSION, PRODUCT, MODS, LOG, BASE, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
-  MAX_PROGRAMS, sameExe, isConfirmed, downloaded, programName, programProblem, programRefusal, handOffRefusal, startProgram,
+  MAX_PROGRAMS, sameExe, isConfirmed, downloaded, programName, programProblem, programRefusal, handOffRefusal, startProgram, programArgs,
+  playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY,
 } from './core.mjs';
+import { repairPlaces, frozenStatus, copyIn, steamDownload, isAbort } from './freeze.mjs';
 import { installMods, itemsFromPage, readChosen } from './install.mjs';
 import PAGE from './gui-page.mjs';
 
@@ -28,15 +30,8 @@ const BODY_MAX = 65536;
 const INSTALL_BODY_MAX = 48 * 1024 * 1024;
 const GONE_MS = 15000;
 const GONE_MS_BROWSER = 150000;
-// One launcher at a time: two would both start the game on the same debug port and serve it twice. The pipe keeps
-// the name of the 0.2 launcher (and the window profile below its folder) so an older copy and this one exclude
-// each other.
-const LOCK_PIPE = '\\\\.\\pipe\\geoplanetical-mod-launcher';
-
 export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
-  const lock = createNetServer();
-  const locked = await new Promise(resolve => { lock.once('error', () => resolve(false)); lock.listen(LOCK_PIPE, () => resolve(true)); });
-  if (!locked) {
+  if (!await takeLock()) {
     makeLog(() => {})('another launcher is already open; this one closes');
     if (noWindow) console.log('another launcher is already open');
     else await messageBox(`The ${PRODUCT} is already open. Use the window that is already running (check the taskbar).`);
@@ -56,7 +51,16 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   const settings = readSettings();
   if (gameDirArg) { settings.gameDir = gameDirArg; saveSettings(settings, log); }
   const steam = steamExe();
-  let game = findGame(settings.gameDir || null);
+  // The two games (launcher/core.mjs chosenGame): `live`, the Steam game (findGame), and the frozen copy in `places`
+  // (patcher/frozen.mjs), whose last check is `frozen` ({ status: 'checking' | 'ready' | 'missing' | 'other' | 'broken'
+  // | 'unavailable', problem }). `task`: the frozen copy being set up ({ kind, step, done, total, mb, command,
+  // clipboard, abort }; launcher/freeze.mjs), one at a time.
+  let live = findGame(settings.gameDir || null);
+  const places = frozenPlaces();
+  let frozen = places ? { status: 'checking', problem: null } : { status: 'unavailable', problem: 'Windows does not say where programs keep their data (LOCALAPPDATA), so the frozen game has nowhere to go.' };
+  let task = null;
+  const current = () => chosenGame(settings, frozenGame(places, frozen.status === 'ready'), live);
+  const frozenSaves = () => !!places && existsSync(join(places.data, 'saves'));
   let { mods, broken } = scanMods(MODS);
   // phase: ready (choose and start) | building | playing | ended (session over or dry run) ; message: the latest notice
   // or refusal ; notice: what the last action did when it succeeded (a mod added), until the next action
@@ -97,32 +101,90 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     }
     return running.value;
   };
-  log(`${PRODUCT} ${VERSION} (window). Single player only.`);
-  if (!game) log(settings.gameDir ? `the saved game folder does not hold the game: ${settings.gameDir}` : 'Geoplanetical was not found in the Steam libraries');
+  log(`${PRODUCT} ${VERSION} (window). Single player only. Frozen game: build ${PIN.build} (game ${PIN.version}); playing the ${playChoice(settings)} game.`);
+  if (!live) log(settings.gameDir ? `the saved game folder does not hold the game: ${settings.gameDir}` : 'Geoplanetical was not found in the Steam libraries');
   if (!steam) log('Steam was not found on this PC');
 
-  const state = () => ({
-    version: VERSION, dryRun, phase, message, notice, problem, warning,
-    steamFound: !!steam,
-    game: game && { dir: game.dir, build: game.build, updating: game.updating, targetBuild: game.targetBuild },
-    savedDir: settings.gameDir || null,
-    gameRunning: phase === 'playing' ? true : gameIsRunning(),
-    modsFolder: MODS,
-    mods: mods.map(m => ({
-      id: m.id, name: m.name, version: m.version, author: m.author || null, requires: m.requires || [],
-      builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length,
-      fits: !!game && m.builds.includes(game.build), enabled: isEnabled(settings, m),
-    })),
-    broken: broken.map(b => ({ folder: b.folder, error: b.error })),
-    programs: settings.programs.map(p => ({ exe: p.exe, name: programName(p), confirmed: isConfirmed(p), problem: problemOf(p.exe) })),
-    log: lines, logSeq,
-  });
+  // The frozen copy's state, checked again (about a second; it only reads). An interrupted replacement is repaired
+  // once, here, before the window can start anything: the lock makes this the only loader working on that folder.
+  const checkFrozen = async () => {
+    if (!places) return;
+    try { frozen = await frozenStatus(places); } catch (e) { frozen = { status: 'unreadable', problem: `The frozen game could not be checked (${e.code || 'unknown error'}). Click Refresh to check it again.` }; }
+    log(`frozen game: ${frozen.status}${frozen.problem ? ` (${frozen.problem})` : ''}`);
+  };
+  if (places) {
+    try { await repairPlaces(places, log); } catch (e) { log(`could not tidy the frozen game's folder (${e.code || 'unknown error'})`); }
+    checkFrozen();
+  }
+
+  const state = () => {
+    const game = current();
+    return {
+      version: VERSION, dryRun, phase, message, notice, problem, warning,
+      steamFound: !!steam,
+      play: playChoice(settings),
+      pin: { build: PIN.build, version: PIN.version },
+      frozen: { ...frozen, dir: places?.game ?? null, savesCopied: frozenSaves() },
+      task: task && { kind: task.kind, step: task.step, done: task.done, total: task.total, mb: task.mb ?? null, command: task.command ?? null, clipboard: task.clipboard ?? null },
+      live: live && { dir: live.dir, build: live.build, updating: live.updating, targetBuild: live.targetBuild },
+      game: game && { dir: game.dir, build: game.build, updating: game.updating, targetBuild: game.targetBuild, frozen: !!game.frozen, ready: game.frozen ? game.ready : true },
+      savedDir: settings.gameDir || null,
+      gameRunning: phase === 'playing' ? true : gameIsRunning(),
+      modsFolder: MODS,
+      mods: mods.map(m => ({
+        id: m.id, name: m.name, version: m.version, author: m.author || null, requires: m.requires || [],
+        builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length,
+        fits: !!game && m.builds.includes(game.build), enabled: isEnabled(settings, m),
+      })),
+      broken: broken.map(b => ({ folder: b.folder, error: b.error })),
+      programs: settings.programs.map(p => ({ exe: p.exe, name: programName(p), confirmed: isConfirmed(p), problem: problemOf(p.exe) })),
+      log: lines, logSeq,
+    };
+  };
 
   const useFolder = dir => {
     const g = findGame(dir);
     if (!g) return 'That folder does not hold the game. Choose the folder with Geoplanetical.exe in it.';
-    freshPrograms(); settings.gameDir = dir; save(); game = g;
+    freshPrograms(); settings.gameDir = dir; save(); live = g;
     log(`game folder set: ${dir} (build ${g.build ?? 'unknown'})`);
+    return null;
+  };
+
+  // Sets up the frozen copy in the background (launcher/freeze.mjs): `work({ onProgress, signal })`. Refused while
+  // the loader is busy, a program was just handed the game, or the game runs (the copy may be in use).
+  const freeze = (kind, work) => {
+    if (phase !== 'ready') return 'The loader is busy.';
+    if (task) return 'The frozen game is already being set up.';
+    const busy = programBusy();
+    if (busy) return busy;
+    if (!places) return frozen.problem;
+    if (frozen.status === 'checking') return 'The frozen game is being checked: try again in a moment.';
+    try { running = { at: Date.now(), value: gameRunning() }; } catch (e) {
+      log(`could not tell whether the game is running: ${e.message}`);
+      return 'Could not tell whether Geoplanetical is running. Close it if it is, then try again.';
+    }
+    if (running.value) return 'Geoplanetical is running. Close it first: the frozen game may be in use.';
+    const abort = new AbortController();
+    task = { kind, step: 'starting', done: 0, total: 0, abort };
+    message = null; notice = null;
+    log(`setting up the frozen game (${kind})`);
+    (async () => {
+      try {
+        await work({ onProgress: p => { if (task) Object.assign(task, p); }, signal: abort.signal });
+        notice = `The frozen game is ready: build ${PIN.build} (game ${PIN.version}).`; message = null;
+        log(`the frozen game is ready: build ${PIN.build}`);
+      } catch (e) {
+        if (isAbort(e)) { message = 'Cancelled. The frozen game was not changed.'; log('setting up the frozen game was cancelled'); } else {
+          log(`the frozen game could not be set up: ${e.said ? e.message : e?.stack || e}`);
+          message = e.said ? e.message : 'The frozen game could not be set up (see the log). It was not changed.';
+        }
+        notice = null;
+      } finally {
+        // (the new state first: until it is known, the task still holds Play and the other buttons)
+        await checkFrozen();
+        task = null; lastSeen = Date.now();
+      }
+    })();
     return null;
   };
 
@@ -130,11 +192,14 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     if (phase !== 'ready') return 'The loader is busy.';
     const busy = programBusy();
     if (busy) return busy;
+    if (task) return 'Wait until the frozen game is set up, or cancel it.';
+    const game = current();
     if (!game) return 'Choose the game folder first.';
-    if (!steam) return 'Steam was not found on this PC. The game must be started through Steam.';
+    if (game.frozen && !game.ready) return frozen.status === 'checking' ? 'The frozen game is being checked: try again in a moment.' : FROZEN_NOT_READY;
+    if (!steam) return 'Steam was not found on this PC. The game needs Steam.';
     const { chosen, error } = chooseMods(mods, settings, game, broken);
     if (error) return error;
-    if (!chosen.length) return 'No mod is switched on. Start the game from Steam as usual to play without mods.';
+    if (!chosen.length) return noModsMessage(mods, settings, game);
     const blocker = launchBlocker(settings, game);
     if (blocker) return blocker;
     // A failed check must not let a second copy start: the game's state is then unknown, so refuse.
@@ -149,8 +214,17 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         const built = buildMods(game, chosen, log);
         lastSeen = Date.now(); // the build blocks; polls queued meanwhile are read only after the next timer check
         if (built.error) { phase = 'ready'; message = built.error; return; }
+        let frozenDir = null;
+        if (game.frozen) {
+          // (a dry run checks the copy, not Steam, and copies no saves) The check is the last step before the start.
+          message = frozenSaves() || dryRun ? 'Checking the frozen game…' : 'Copying your Steam saves into the frozen game (once) and checking it…';
+          const ready = await prepareFrozen(game, log, dryRun ? { saves: false, steam: false } : {});
+          lastSeen = Date.now();
+          if (ready.error) { phase = 'ready'; message = ready.error; checkFrozen(); return; }
+          frozenDir = ready.dir;
+        }
         if (dryRun) { log('dry run: everything checks out; the game was not started'); phase = 'ended'; message = 'Dry run: the mods were built and checked. The game was not started.'; return; }
-        phase = 'playing'; message = 'Starting the game through Steam…';
+        phase = 'playing'; message = game.frozen ? 'Starting the frozen game…' : 'Starting the game through Steam…';
         // A worker that does not take the mods is shown at once (problem), not only when the game closes.
         // Page scripts: a throw stays a warning for the session; "did not run" lasts until a later page load runs them.
         let pageFailed = false;
@@ -159,7 +233,10 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
           if (status === 'broken') pageFailed = true;
           warning = pageFailed || status === 'original';
         };
-        const end = await playSession({ steam, port, payloads: built.payloads, scripts: built.scripts, chosen, log, onSwap });
+        const end = await playSession({
+          steam, frozen: frozenDir ? { dir: frozenDir, dataDir: game.dataDir } : null,
+          port, payloads: built.payloads, scripts: built.scripts, chosen, log, onSwap,
+        });
         phase = 'ended'; problem = end.problem; warning = end.warning; message = end.message;
       } catch (e) {
         log(`error: ${e?.stack || e}`);
@@ -189,6 +266,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         (a.from.length ? ` (replaced folder ${a.from.join(', ')}${a.replaced.length ? `, version ${a.replaced.join(', ')}` : ''})` : ''));
     }
     if (kept) log(`the replaced copies could not be moved to the Recycle Bin; they are in ${kept}`);
+    const game = current();
     const unfit = added.filter(a => !game || !mods.find(m => m.id === a.id)?.builds.includes(game.build));
     notice = `Added ${added.map(a => `${a.name} ${a.version}${a.replaced.length ? ` (replacing ${a.replaced.join(', ')})` : ''}`).join(', ')}.` +
       (added.some(a => a.from.length) ? (kept ? ` The previous copy is kept in ${kept}.` : ' The previous copy is in the Recycle Bin.') : '') +
@@ -198,10 +276,11 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
 
   // Why program `p` cannot be started now, or null: core.mjs programRefusal, then what needs Steam and Windows.
   const refuseProgram = (p, confirmed) => {
+    const game = current();
     const refusal = programRefusal(p, { confirmed, dryRun, game, mods, broken, settings, saved: readSettings().enabled });
     if (refusal) return refusal;
     const name = programName(p);
-    const blocker = programBusy() || launchBlocker(settings, game);
+    const blocker = programBusy() || (task ? 'Wait until the frozen game is set up, or cancel it.' : null) || launchBlocker(settings, game);
     if (blocker) return blocker;
     try { running = { at: Date.now(), value: gameRunning() }; } catch (e) {
       log(`could not tell whether the game is running: ${e.message}`);
@@ -214,6 +293,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   const quit = () => {
     if (phase === 'building') return 'Wait until the mods are built: the game is about to start.';
     if (phase === 'playing') log('quit while the game was running: parts of the game that restart now run WITHOUT the mods.');
+    if (task) { task.abort.abort(); log('quit while the frozen game was being set up: it was not changed (the partial copy is removed next time)'); }
     log('launcher closed');
     setTimeout(() => process.exit(problem ? 1 : 0), 200);
     return null;
@@ -266,6 +346,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         const busy = programBusy();
         if (busy) return reply(busy);
         if (!m) return reply('No such mod.');
+        const game = current();
         if (!game || !m.builds.includes(game.build)) return reply(`${m.name} cannot run on this game version.`);
         freshPrograms();
         settings.enabled[m.id] = !isEnabled(settings, m); save();
@@ -295,9 +376,49 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         if (phase !== 'ready') return reply('Wait until the session is over.');
         const busy = programBusy();
         if (busy) return reply(busy);
-        game = findGame(settings.gameDir || null); ({ mods, broken } = scanMods(MODS));
+        live = findGame(settings.gameDir || null); ({ mods, broken } = scanMods(MODS));
         freshPrograms(); problems.clear();
+        if (!task) checkFrozen();
         return done();
+      }
+      case 'POST /api/play': {
+        if (phase !== 'ready') return reply('The game cannot be changed now.');
+        const busy = programBusy();
+        if (busy) return reply(busy);
+        if (body.which !== 'live' && body.which !== 'frozen') return reply('No such game.');
+        freshPrograms(); settings.play = body.which; save();
+        log(`playing the ${body.which} game`);
+        return done();
+      }
+      case 'POST /api/freeze-live': {
+        if (!live || live.build !== PIN.build || live.updating) {
+          return reply(`Your Steam game is not build ${PIN.build} (game ${PIN.version}) now${live?.build ? ` but ${live.build}` : ''}, so it cannot be copied. Download that build with Steam instead.`);
+        }
+        const src = live.dir;
+        return reply(freeze('copy from the Steam game', o => copyIn(src, places, { ...o, log, what: 'Your Steam game' })));
+      }
+      case 'POST /api/freeze-folder': {
+        if (phase !== 'ready') return reply('The loader is busy.');
+        if (task) return reply('The frozen game is already being set up.');
+        if (browsing) return reply('A dialog is already open.');
+        browsing = true;
+        let dir;
+        try { dir = await browseFolder({ frozen: true }); } finally { browsing = false; }
+        lastSeen = Date.now();
+        if (!dir) return done();
+        return reply(freeze(`copy from ${dir}`, o => copyIn(dir, places, { ...o, log })));
+      }
+      case 'POST /api/freeze-download': {
+        // (refused before Steam's folder is looked up: that runs PowerShell, which must not hold up a game session)
+        if (phase !== 'ready') return reply('The loader is busy.');
+        if (task) return reply('The frozen game is already being set up.');
+        const steamDir = steamPath();
+        if (!steam || !steamDir) return reply('Steam was not found on this PC.');
+        return reply(freeze('download with Steam', o => steamDownload({ steam, steamDir, places, onStatus: o.onProgress, signal: o.signal, log })));
+      }
+      case 'POST /api/freeze-cancel': {
+        if (task) task.abort.abort();
+        return reply();
       }
       case 'POST /api/install': {
         const e = add(() => itemsFromPage(body), 'what was dropped');
@@ -363,21 +484,32 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         if (refusal) return reply(refusal);
         if (!isConfirmed(p)) { p.confirmed = p.exe; save(); }
         const name = programName(p);
+        // The frozen game: the program is given the copy's folder (--game) after the same check as Play (it checks
+        // the folder again itself, and keeps its own saves for it).
+        const game = current();
+        let gameDir = null;
         starting = true;
         let started;
-        try { started = await startProgram(p.exe); } finally { starting = false; }
+        try {
+          if (game.frozen) {
+            const ready = await prepareFrozen(game, log, { saves: false });
+            if (ready.error) { checkFrozen(); return reply(ready.error); }
+            gameDir = ready.dir;
+          }
+          started = await startProgram(p.exe, BASE, { gameDir });
+        } finally { starting = false; }
         lastSeen = Date.now();
         if (started.error) {
           log(`could not start ${name} (${p.exe}): ${started.error}`);
           return reply(`${name} could not be started: ${started.error}`);
         }
         handedOff = { at: Date.now(), name, pid: started.pid };
-        log(`started ${name} (${p.exe} --loader ${BASE}); it starts the game itself, with the mods switched on here`);
-        notice = `Started ${name}. It starts the game itself, with the mods switched on here: follow its own window. You can close this one.`;
+        log(`started ${name} (${p.exe} ${programArgs(BASE, gameDir)}); it starts the ${gameDir ? 'frozen ' : ''}game itself, with the mods switched on here`);
+        notice = `Started ${name}. It starts the ${gameDir ? 'frozen ' : ''}game itself, with the mods switched on here: follow its own window. You can close this one.`;
         return done(true);
       }
       case 'POST /api/open': {
-        const target = body.what === 'log' ? LOG : body.what === 'mods' ? MODS : null;
+        const target = body.what === 'log' ? LOG : body.what === 'mods' ? MODS : body.what === 'saves' && places ? join(places.data, 'saves') : null;
         if (!target || !existsSync(target)) return reply('Nothing to open yet.');
         const child = spawn(body.what === 'log' ? 'notepad' : 'explorer', [target], { detached: true, stdio: 'ignore' });
         child.on('error', e => log(`could not open ${target}: ${e.message}`));
@@ -406,6 +538,12 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   setInterval(() => {
     if (Date.now() - lastSeen < goneMs) return;
     if (phase === 'playing' || phase === 'building') return;
+    // A copy being made finishes first; waiting for Steam's download ends with the window (nobody would see it end).
+    if (task && ['starting', 'waiting', 'downloading'].includes(task.step) && task.kind === 'download with Steam') {
+      if (!task.abort.signal.aborted) { log('window closed while waiting for Steam\'s download: stopped waiting'); task.abort.abort(); }
+      return;
+    }
+    if (task) return;
     log('window closed; launcher exiting');
     process.exit(problem ? 1 : 0);
   }, 2000).unref?.();
@@ -450,10 +588,14 @@ function powershell(command) {
   });
 }
 
-// The Windows folder picker. Resolves the folder, or null if cancelled. The command is constant (no user input).
-async function browseFolder() {
+// The Windows folder picker: for the Steam game's folder, or (`frozen`) a folder holding the pinned build to copy.
+// Resolves the folder, or null if cancelled. The command is constant (no user input; the pin is digits).
+async function browseFolder({ frozen = false } = {}) {
+  const what = frozen
+    ? `Choose a folder holding Geoplanetical build ${PIN.build} (game ${PIN.version}). It is copied, never changed.`
+    : 'Choose the Geoplanetical game folder (the one with Geoplanetical.exe)';
   const dir = await powershell('Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; ' +
-    "$d.Description = 'Choose the Geoplanetical game folder (the one with Geoplanetical.exe)'; " +
+    `$d.Description = '${what}'; ` +
     '$f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; ' +
     '[Console]::OutputEncoding=[Text.Encoding]::UTF8; if ($d.ShowDialog($f) -eq "OK") { $d.SelectedPath }');
   return dir || null;
