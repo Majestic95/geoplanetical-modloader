@@ -102,7 +102,9 @@ Close the game, then start it through the loader with only your mod:
 node <loader>/patcher/launch.mjs --mod my-mod
 ```
 
-This starts the game through Steam, applies the mod in memory and stays attached until the game closes; it prints
+This starts the game through Steam, applies the mod in memory and stays attached until the game closes; with
+`--frozen` it starts the loader's frozen game instead (set it up once in the loader's window; it has its own saves,
+apart from the Steam game's). It prints
 whether each patched part of the game is confirmed to run your code, and whether your page scripts ran (on every page
 load; an error a script throws is in the game's developer tools console). `--dry-run` does everything except start the
 game, and `--unpatched` starts the game through the same path without mods, for comparison. You can also copy your
@@ -143,8 +145,12 @@ The package lands in `dist/package/` in your workspace.
 
 ## When the game updates
 
-A game update changes the build id, and usually the minified names and positions in the bundles. The loader then
-lists your mod as not made for this game version until you port it:
+A Steam update of the game does not stop your mod: players play the loader's frozen build (see
+[mod-format.md](mod-format.md#modjson)), which Steam does not change. Port your mod when a loader release
+moves its frozen build (its changelog says so), or earlier if you want it to play on the live Steam game too.
+
+A new build changes the build id, and usually the minified names and positions in the bundles. The loader lists your
+mod as not made for that game version until you port it:
 
 1. Extract the new build next to the old one (step 2, with the new build id).
 2. Run the port tool. It finds each edit's code in the new build near its anchor and works out the renamed names:
@@ -158,7 +164,8 @@ lists your mod as not made for this game version until you port it:
    top-level definition can mean the name now belongs to a different function.
 3. For single names, `python -I <loader>/tools/rename-map.py <old bundle> <new bundle> NAME ...` finds what a
    function or variable is called in the new build.
-4. Copy the ported patches in, set `builds` to the new build, build (step 5) and play-test again (step 6).
+4. Copy the ported patches in, add the new build to `builds` (keep the old one only while you still test against it),
+   build (step 5) and play-test again (step 6).
 
 ## Programs
 
@@ -171,13 +178,22 @@ is listed here.
 **How the loader starts it.** As
 
 ```
-<program>.exe --loader "<the loader's folder>"
+<program>.exe --loader "<the loader's folder>" [--game "<the frozen game's folder>"]
 ```
 
 with the program's own folder as the working folder, through Windows' ShellExecute (as Explorer starts a program): a
 console program gets a console window of its own. (Windows shows no warning for a downloaded program started this
-way; the loader asks the player itself, below.) The loader passes no other argument, and starts nothing else: it does not build the mods or start the
-game for a program. Your program starts the game itself (through Steam, `steam -applaunch 940230`).
+way; the loader asks the player itself, below.) The loader passes no other argument, and starts nothing else: it does
+not build the mods or start the game for a program. Your program starts the game itself:
+
+- Without `--game`, the player chose the live Steam game: start it through Steam (`steam -applaunch 940230`).
+- With `--game`, the player chose the loader's frozen game: a folder holding one build of the game, outside the
+  Steam library (loader 0.6.0: build `26403824`). The loader checked it just before (its `resources\app.asar` index
+  and every file outside the archive match that build), but check it again yourself before you start anything in it,
+  and refuse a folder that is not a build you support. Start its `Geoplanetical.exe` directly, with Steam running
+  and `SteamAppId` and `SteamGameId` set to `940230` in its environment (the game then does not hand itself back to
+  Steam), and a `--user-data-dir` of your own (the game keeps its saves and settings there; the loader's own data
+  folder for the frozen game is not yours to use). Never write into the folder.
 
 **What the loader's folder holds.**
 - `mods\`: one folder per mod, in the [mod format](mod-format.md). Read the mods as the loader does: the same checks,
@@ -188,7 +204,8 @@ game for a program. Your program starts the game itself (through Steam, `steam -
   or unreadable file switches nothing off. Read it; never write it.
 
 **When the loader refuses.** Before it starts a program, the loader checks what it checks before its own Play: that
-the game was found and is not being updated by Steam, that Geoplanetical is not already running, that the mods
+the game was found and is not being updated by Steam (for the frozen game: that it is set up, matches its build and
+Steam is running), that Geoplanetical is not already running, that the mods
 switched on can load together (no required mod off or missing), and that the switches the window shows are the ones
 saved in `launcher-settings.json`. A program may start with no mod switched on. Until your program exits, or for at
 most a minute after it started, the loader starts neither the game nor another program and does not change the

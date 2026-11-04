@@ -71,7 +71,7 @@ A mod with only a page script (format 2):
 | `name` | yes | Shown to players. |
 | `version` | yes | Shown to players. Any non-empty text; [semantic versioning](https://semver.org) is recommended. |
 | `description` | yes | Non-empty text. |
-| `builds` | yes | The Steam build ids of the game this mod is made for, as strings of digits. The loader only applies a mod (its patches and its page scripts) to a game whose installed build is listed. |
+| `builds` | yes | The Steam build ids of the game this mod is made for, as strings of digits. The loader only applies a mod (its patches and its page scripts) to a game whose build is listed: its frozen game's build, or the live Steam game's (see below). |
 | `patches` | yes, unless the mod has `scripts` | Non-empty list of patch file paths, relative to the mod folder. Applied in this order. A format-2 mod with `scripts` may leave it out. |
 | `scripts` | no (format 2) | Non-empty list of at most 20 page script paths, relative to the mod folder, each listed once: `.js` files run in the game's window, in this order. A path is made of letters, digits, `_`, `.` and `-`, with `/` between folders, and each folder and file name starts with a letter, digit or `_` (`page/labels.js`). See [Page scripts](#page-scripts). A mod that uses it declares `"format": 2`. |
 | `author` | no | Shown to players beside the mod's name. |
@@ -79,10 +79,14 @@ A mod with only a page script (format 2):
 | `requires` | no | Ids (text) of mods that must be loaded with this one. They load before it. |
 | `changes` | no | The changelog the launcher shows. Each entry is a sentence, or `{ "group": "Heading", "items": [sentences] }`. |
 
-Finding the build id: Steam records it in `steamapps/appmanifest_940230.acf` (`"buildid"`), and the loader shows it
-in its window. A game update changes the build id, so the mod must be checked and ported (see
-[authoring.md](authoring.md#when-the-game-updates)) and its `builds` list updated. List more than one build only when
-every edit and every page script has been checked against each of them.
+Which build: each loader release plays one **frozen** build of the game from the player's own copy of it, kept outside
+the Steam library so that Steam updates do not change it (loader 0.6.0: build `26403824`, game 1.0.8). The loader
+shows it in its window. Make your mod for that build and list it in `builds`. The player can also choose the live
+Steam game, whose build is in `steamapps/appmanifest_940230.acf` (`"buildid"`); a mod plays on it only when that
+build is listed too. A Steam update therefore no longer stops a mod: the mod is ported (see
+[authoring.md](authoring.md#when-the-game-updates)) when a loader release moves its frozen build, and that build is
+added to `builds`. List more than one build only when every edit and every page script has been checked against each
+of them.
 
 ## Patch files
 

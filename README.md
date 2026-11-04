@@ -16,19 +16,26 @@ Not affiliated with the developers of Geoplanetical.
    build it from source (below).
 2. Run `GeoplaneticalModLoader.exe` and drop each mod's zip (or folder) onto its window, or click **Add mod...**.
    The loader checks the mod, adds it to its `mods` folder and replaces an older version of the same mod.
-3. Switch mods on or off and click **Play with mods**.
-4. To play the same mods through another program, such as a multiplayer launcher, click **Add program...** once and
+3. The first time, set up the **frozen game**: the loader's own copy of the game version its mods are made for, which
+   Steam updates do not change (about 3.9 GB). Copy it from your Steam game while that is the same version, or
+   download that version with Steam: the loader opens Steam's console and copies the one command to paste. You can
+   also choose the live Steam game instead.
+4. Switch mods on or off and click **Play with mods**.
+5. To play the same mods through another program, such as a multiplayer launcher, click **Add program...** once and
    choose its `.exe`; its **Play with** button then starts it with the mods switched on in the loader.
 
 The included `README.txt` covers saves, updates and what to do when something goes wrong.
 
-- **Windows and Steam only.** The game must be installed through Steam; the loader starts it through Steam.
+- **Windows and Steam only.** Your copy of the game comes from your own Steam account. The loader starts the frozen
+  game from its folder, with Steam running and signed in, or the live game through Steam.
 - **Play with mods is single player.** A modded game's simulation differs from an unmodded one, so it cannot join
   unmodded multiplayer sessions. A separate multiplayer program added under **Programs** can play the mods with
   others who use the same ones.
-- **Saves:** a save made with mods needs the same mods to load correctly.
-- **Game updates:** each mod states the game builds it was made for. After an update, a mod waits until its author
-  releases a version for the new build; the loader shows which mods are ready.
+- **Saves:** a save made with mods needs the same mods to load correctly. The frozen game keeps its own saves (your
+  Steam saves are copied into it the first time you play it); Steam Cloud does not back them up.
+- **Game updates:** a Steam update does not stop the mods: the frozen game stays on its version. Each mod states the
+  game builds it was made for; when a loader release moves to a newer game version, the mods follow, and the loader
+  replaces its copy once you get the new one.
 - The executable is not code-signed, so Windows asks for confirmation the first time.
 
 ## For mod authors
@@ -49,7 +56,9 @@ the game's code, saves and settings.
 1. The loader reads the original game code from the game's `resources/app.asar` (read only) and applies the
    enabled mods' edits to it in memory. Every edit must match exactly once, near its anchor; replacements that
    would add non-deterministic code (time, randomness, page state, timers) are refused.
-2. It starts the game through Steam with Chromium's remote-debugging port on 127.0.0.1, waits for each game
+2. It starts the game with Chromium's remote-debugging port on 127.0.0.1 (the frozen game from its folder, after
+   checking that its archive index and every file outside the archive match the pinned build; the live game through
+   Steam), waits for each game
    worker that a mod changes, and runs the patched code in that worker in place of the original before the
    original runs.
 3. It checks inside each worker that the patched code is the code serving the game, and stays attached until the
@@ -63,7 +72,7 @@ Source layout:
 
 | Folder | Contents |
 |---|---|
-| `patcher/` | Mod loading and validation (`mods.mjs`), the patch engine (`patch-engine.mjs`), game detection (`game.mjs`), the launch-and-attach runtime (`runner.mjs`, `session.mjs`, `cdp.mjs`), the author command-line tools `build.mjs` and `launch.mjs`, and tests |
+| `patcher/` | Mod loading and validation (`mods.mjs`), the patch engine (`patch-engine.mjs`), game detection (`game.mjs`), the frozen game's pin, check and start (`frozen.mjs`), the launch-and-attach runtime (`runner.mjs`, `session.mjs`, `cdp.mjs`), the author command-line tools `build.mjs` and `launch.mjs`, and tests |
 | `launcher/` | The player launcher: a window served on 127.0.0.1 (`gui.mjs`, `gui-page.mjs`), adding mods from a zip or folder (`install.mjs`), a text menu (`console.mjs`), shared steps (`core.mjs`), and the packager (`package.mjs`) |
 | `tools/` | Author tools for reading the game's minified code and porting mods to new game builds |
 | `docs/` | Format specification and authoring guide |

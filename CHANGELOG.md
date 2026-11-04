@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased (0.6.0)
+
+- **The frozen game:** the loader plays one version of the game, build `26403824` (game 1.0.8), from its own copy in
+  `%LOCALAPPDATA%\GeoplaneticalModLauncher\game`, which Steam updates do not change: a game update no longer stops the
+  mods. The window offers three ways to get the copy, once: copy the Steam game while it is that build; download that
+  build with Steam (the loader puts `download_depot 940230 940231 6610280059570798071` on the clipboard and opens
+  Steam's console; the player pastes it, and when the console log says it is complete the loader copies Steam's
+  download into its own folder and removes Steam's); or copy a folder the player already has. The loader always
+  writes the copy itself, so it has the permissions of the player's own folder. Every copy is checked against the
+  pin (the archive's size and index, every file outside the archive, and once the whole archive) before it is used,
+  and the frozen game is checked again as the last step before each start, then started from the folder as checked.
+  There is one copy: a newer pin's copy replaces the old one once it is checked.
+- The frozen game is started from its folder with the loader's debugging port, its own `--user-data-dir`, Steam's ids
+  in its environment, and Steam running (refused otherwise). Its saves are its own: the first time, the Steam game's
+  saves are copied into it (only read, never overwritten); Steam Cloud does not back them up, and the window says so.
+- **Frozen or live:** the window lets the player choose the frozen game (the default) or the live Steam game, which
+  works as before. Mods are matched against the chosen game's build. `launcher-settings.json` keeps the choice as
+  `play`.
+- Programs: when the player plays the frozen game, **Play with** passes its folder as well:
+  `<program> --loader "<loader folder>" --game "<frozen game folder>"`
+  ([docs/authoring.md](docs/authoring.md#programs)).
+- `patcher/launch.mjs --frozen` plays the frozen game from the command line.
+- The game code the loader reads from `app.asar` (live or frozen) is checked against the archive's own SHA-256
+  record of each file; a damaged game file is refused instead of being patched.
+- The text menu (`--console`) now takes the same one-at-a-time lock as the window. Programs started by name
+  (`tasklist`, `clip`, `powershell`) are never taken from the loader's current folder.
+- No change to the mod format: `builds` lists the builds a mod is made for, now the loader's frozen build.
+
 ## 0.5.0 (2026-11-03)
 
 - Page scripts: [docs/mod-format.md](docs/mod-format.md#page-scripts) now says how to read the game's language: the game
