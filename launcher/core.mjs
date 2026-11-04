@@ -14,9 +14,9 @@ import { requirementProblem, orderMods } from '../patcher/mods.mjs';
 import { findGame, originalBundle } from '../patcher/game.mjs';
 import { launchAndServe } from '../patcher/runner.mjs';
 import { PIN, checkFolder, checkProblem, copySavesOnce, steamRunning, errorCode } from '../patcher/frozen.mjs';
-import { PAGE } from '../patcher/session.mjs';
+import { PAGE, PAGE_BUNDLE } from '../patcher/session.mjs';
 
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 export const PRODUCT = 'Geoplanetical Mod Loader';
 // Packaged: everything sits beside the executable. Development: the repository root (mods/ is the repo's).
 export const BASE = isSea() ? dirname(process.execPath) : join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -299,6 +299,8 @@ export function buildMods(game, chosen, log) {
       new Script(r.text, { filename: bundle }); // compile only: a broken result never reaches the game
       payloads.set(bundle, r.text);
       log(`${bundle}: ${r.report.length} change(s) ready`);
+      const entries = r.report.filter(e => e.entry).map(e => `${e.mod}: ${e.entry}`);
+      if (entries.length) log(`wording changed: ${entries.join(', ')}`);
     }
   } catch (e) {
     log(`the mods could not be applied: ${e.message}`);
@@ -312,15 +314,25 @@ export function buildMods(game, chosen, log) {
 // session; onSwap({ bundle, status }) also reports each worker swap and the page scripts (bundle PAGE) as they happen.
 // A page script runs beside the game's own code, so one that fails is a warning (what a mod shows on screen may be
 // missing), not a problem (the game possibly unmodded). A script that threw stays a warning for the session; one that
-// did not run stops being one once a later page load runs it.
+// did not run stops being one once a later page load runs it. Wording changes that are not active are a warning too: the
+// game runs its own code and only its text differs; a later page load that has them ends the warning. The one exception
+// is the status broken: the changed code failed and the page was left that way, which is a problem like a broken worker.
 export async function playSession({ steam, frozen = null, port, payloads, scripts = [], chosen, log, onSwap: report = () => {} }) {
   log(`starting Geoplanetical ${frozen ? `from the frozen copy (build ${PIN.build})` : 'through Steam'} with ${chosen.map(m => m.name).join(', ')}`);
-  let problem = false, pageFailed = false, pageMissing = false;
+  let problem = false, pageFailed = false, pageMissing = false, wordingMissing = false, wordingBroken = false;
   const confirmed = new Set();
   const onSwap = ({ bundle, status, detail }) => {
     try { report({ bundle, status }); } catch { /* the front end's display only */ }
     if (bundle === PAGE) pageMissing = status === 'original';
+    if (bundle === PAGE_BUNDLE) {
+      wordingMissing = status !== 'patched';
+      wordingBroken ||= status === 'broken';
+    }
     if (status === 'patched') { confirmed.add(bundle); return log(`mods active (${bundle})`); }
+    if (bundle === PAGE_BUNDLE && status !== 'broken') {
+      return log(`THE WORDING CHANGES ARE NOT ACTIVE (${status}): ${detail || status}. The game shows its own text; its code and ` +
+        'simulation mods are unaffected. Report it to the mod\'s author, with launcher.log.');
+    }
     if (bundle === PAGE) {
       if (status === 'broken') pageFailed = true;
       return log(`A PAGE SCRIPT ${status === 'broken' ? 'FAILED' : 'DID NOT RUN'}: ${detail || status}. The game itself and its ` +
@@ -338,7 +350,11 @@ export async function playSession({ steam, frozen = null, port, payloads, script
         problem = true; resolve();
       });
   });
-  const missing = [...payloads.keys()].filter(b => !confirmed.has(b));
+  if (payloads.has(PAGE_BUNDLE) && !confirmed.has(PAGE_BUNDLE)) {
+    wordingMissing = true;
+    if (!wordingBroken) log('the wording changes were never confirmed active: the game most likely showed its own text.');
+  }
+  const missing = [...payloads.keys()].filter(b => b !== PAGE_BUNDLE && !confirmed.has(b));
   if (missing.length) {
     problem = true;
     log(`the mods were never confirmed active in ${missing.join(', ')}: that session most likely ran the UNMODDED game.`);
@@ -347,14 +363,14 @@ export async function playSession({ steam, frozen = null, port, payloads, script
     pageMissing = true;
     log('the page scripts were never confirmed running: what those mods show on screen was most likely missing.');
   }
-  const warning = pageFailed || pageMissing;
+  const warning = pageFailed || pageMissing || wordingMissing;
   return {
     problem,
     warning,
     message: problem
       ? 'Something went wrong (see the log). Saves from that session may be unmodded. launcher.log beside this program has the details.'
       : warning
-        ? 'The game has closed. The mods were active, but a page script failed or did not run, so what a mod shows on screen may have been missing (see the log).'
+        ? 'The game has closed. The mods were active, but a page script or a wording change failed or did not run, so what a mod shows on screen may have been missing (see the log).'
         : 'The game has closed. The mods were active the whole session.',
   };
 }

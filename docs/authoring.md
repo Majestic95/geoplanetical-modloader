@@ -81,6 +81,13 @@ game's page while it runs through `patcher/launch.mjs`: in Chrome (`chrome://ins
 the console, pick your mod's context (`gpml:<your mod id>`) to see what your script sees. Page scripts are not ported by
 `tools/port-patches.mjs`: check them by hand on each new build.
 
+### Correcting the game's text (format 3)
+
+To correct the game's own English or French wording, patch `app.bundle.js`: extract it as in step 2, find the entry by
+its key (`"enr.moon.note":"`), set `"format": 3`, and follow [Wording changes](mod-format.md#wording-changes). Such a
+patch can change the text of existing entries and nothing else, and `patcher/build.mjs` refuses anything more with a
+message naming the edit. Keep it in a mod of its own: multiplayer launchers that read format 2 refuse a format-3 mod.
+
 ## 5. Build and check
 
 From your workspace:
@@ -105,8 +112,8 @@ node <loader>/patcher/launch.mjs --mod my-mod
 This starts the game through Steam, applies the mod in memory and stays attached until the game closes; with
 `--frozen` it starts the loader's frozen game instead (set it up once in the loader's window; it has its own saves,
 apart from the Steam game's). It prints
-whether each patched part of the game is confirmed to run your code, and whether your page scripts ran (on every page
-load; an error a script throws is in the game's developer tools console). `--dry-run` does everything except start the
+whether each patched part of the game is confirmed to run your code, whether your wording changes are active, and
+whether your page scripts ran (on every page load; an error a script throws is in the game's developer tools console). `--dry-run` does everything except start the
 game, and `--unpatched` starts the game through the same path without mods, for comparison. You can also copy your
 mod folder into the `mods` folder of a packaged loader and use its window.
 

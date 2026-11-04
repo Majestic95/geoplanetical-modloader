@@ -11,7 +11,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { scanMods, changeGroups } from '../patcher/mods.mjs';
-import { PAGE as PAGE_SCRIPTS } from '../patcher/session.mjs';
+import { PAGE as PAGE_SCRIPTS, PAGE_BUNDLE } from '../patcher/session.mjs';
 import { findGame, gameRunning, steamExe, steamPath } from '../patcher/game.mjs';
 import { PIN, frozenPlaces } from '../patcher/frozen.mjs';
 import {
@@ -133,7 +133,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       modsFolder: MODS,
       mods: mods.map(m => ({
         id: m.id, name: m.name, version: m.version, author: m.author || null, requires: m.requires || [],
-        builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length,
+        builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length, wording: m.patches.some(p => p.bundle === PAGE_BUNDLE),
         fits: !!game && m.builds.includes(game.build), enabled: isEnabled(settings, m),
       })),
       broken: broken.map(b => ({ folder: b.folder, error: b.error })),
@@ -227,11 +227,16 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         phase = 'playing'; message = game.frozen ? 'Starting the frozen game…' : 'Starting the game through Steam…';
         // A worker that does not take the mods is shown at once (problem), not only when the game closes.
         // Page scripts: a throw stays a warning for the session; "did not run" lasts until a later page load runs them.
-        let pageFailed = false;
+        // Wording changes not active: a warning until a later page load has them (broken: a problem, as for a worker).
+        let pageFailed = false, pageMissing = false, wordingMissing = false;
         const onSwap = ({ bundle, status }) => {
-          if (bundle !== PAGE_SCRIPTS) { if (status !== 'patched') problem = true; return; }
-          if (status === 'broken') pageFailed = true;
-          warning = pageFailed || status === 'original';
+          if (bundle === PAGE_BUNDLE && status !== 'broken') wordingMissing = status !== 'patched';
+          else if (bundle !== PAGE_SCRIPTS) { if (status !== 'patched') problem = true; return; }
+          else {
+            if (status === 'broken') pageFailed = true;
+            pageMissing = status === 'original';
+          }
+          warning = pageFailed || pageMissing || wordingMissing;
         };
         const end = await playSession({
           steam, frozen: frozenDir ? { dir: frozenDir, dataDir: game.dataDir } : null,

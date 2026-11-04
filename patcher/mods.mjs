@@ -4,20 +4,23 @@
 // The format is specified for mod authors in docs/mod-format.md; keep the two in step.
 //
 // mod.json   { id, name, version, description, builds: [buildId], patches: ["patches/<file>.json", ...],
-//              format?: 1 | 2, author?, requires?: [modId], changes?: [entry, ...], scripts?: ["<file>.js", ...] }
+//              format?: 1 | 2 | 3, author?, requires?: [modId], changes?: [entry, ...], scripts?: ["<file>.js", ...] }
 //              (changes shown by the launcher), each entry a change ("one or two plain sentences") or a group of them:
 //              { group: "Heading", items: [...] }. scripts needs format 2; with scripts, format 2 may leave out patches.
 // patch file { id, finding?, effect, bundle, edits: [{ anchor, find, replace, near?, determinismOk? }] }
+//              bundle: a *-worker.bundle.js, or app.bundle.js for wording changes (needs format 3).
 // Loaded:    { ...mod.json, dir, patches: [patch file, ...], scripts: [{ path, text }] } (both lists always present)
 import { readFileSync, readdirSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { Script } from 'node:vm';
 import { wrap } from './page-script.mjs';
+import { PAGE_BUNDLE, deliverable } from './page-text.mjs';
 
 // The mod format this loader reads. A mod declares a higher one only when it uses fields added later; this loader
 // then lists it as needing a newer loader instead of rejecting a field it does not know.
 // 1: patches (loader 0.3.0). 2: adds scripts for the game's page, patches optional with scripts (loader 0.4.0).
-export const FORMAT = 2;
+// 3: adds wording changes to app.bundle.js, which older loaders accepted and then silently did not deliver (loader 0.7.0).
+export const FORMAT = 3;
 const MOD_KEYS = ['id', 'name', 'version', 'description', 'builds'];
 const MOD_OPTIONAL = ['patches', 'changes', 'format', 'author', 'requires', 'scripts'];
 // Page scripts: per file and per mod, and how a script path is written (plain segments, no "." or "..").
@@ -66,6 +69,10 @@ function loadPatch(file, where) {
   if (p.finding != null) nonEmpty(p.finding, `${where} finding`);
   nonEmpty(p.effect, `${where} effect`);
   if (typeof p.bundle !== 'string' || !BUNDLE.test(p.bundle)) throw new Error(`${where}: bundle ${shown(p.bundle)} is not a game bundle name`);
+  if (!deliverable(p.bundle)) {
+    throw new Error(`${where}: bundle ${shown(p.bundle)} cannot be patched: the loader only reaches the game's workers ` +
+      `(*-worker.bundle.js) and the wording in ${PAGE_BUNDLE}`);
+  }
   if (!Array.isArray(p.edits) || !p.edits.length) throw new Error(`${where}: edits must be a non-empty array`);
   p.edits.forEach((e, k) => {
     const w = `${where} edit ${k}`;
@@ -125,6 +132,9 @@ function loadMod(dir) {
     ids.add(p.id);
     return p;
   });
+  if ((m.format ?? 1) < 3 && patches.some(p => p.bundle === PAGE_BUNDLE)) {
+    throw new Error(`${file}: a patch to ${PAGE_BUNDLE} needs mod format 3: add "format": 3`);
+  }
   let scripts = [];
   if ('scripts' in m) {
     if (!Array.isArray(m.scripts) || !m.scripts.length) throw new Error(`${file}: scripts must be a non-empty array`);

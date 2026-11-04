@@ -3,7 +3,9 @@
 //
 // An edit is { find, replace, anchor, near?, determinismOk? }: `find` occurs exactly once and is replaced; `anchor`
 // is stable text (error string, event id, config key) that occurs exactly once within `near` chars (default 2000)
-// of `find`. Mods and patches are loaded and validated by mods.mjs.
+// of `find`. Mods and patches are loaded and validated by mods.mjs. Edits to the main page's bundle must also be wording
+// changes (patcher/page-text.mjs).
+import { PAGE_BUNDLE, wordingGuard } from './page-text.mjs';
 
 const DEFAULT_NEAR = 2000;
 
@@ -114,6 +116,7 @@ export function buildBundle(original, mods, { build, bundle }) {
   const report = [];
   const loaded = [];
   const applied = []; // every edit applied so far, in order: { mod, patch, index, edit }
+  let guard = null;
   for (const mod of mods) {
     const mine = mod.patches.filter(p => p.bundle === bundle);
     if (!mine.length) continue;
@@ -138,13 +141,18 @@ export function buildBundle(original, mods, { build, bundle }) {
               ? `${fitsOwn} edit ${by.index} of the same patch already changed that code: the patch's edits overlap`
               : `${fitsOwn} patch ${by.patch} of the same mod already changed that code: the mod's patches overlap`);
         }
+        let entry = null;
+        if (bundle === PAGE_BUNDLE) {
+          guard ??= wordingGuard(original, what);
+          entry = guard.check(text, r.offset, e, what);
+        }
         const hazards = hazardsIntroduced(text, r.text, r.offset, e.find.length, e.replace.length);
         if (hazards.length && !e.determinismOk) {
           throw new Error(`${what}: the edit introduces ${hazards.join(', ')}; the simulation must stay deterministic ` +
             '(set determinismOk with the reason if it provably never feeds simulation state)');
         }
         text = r.text;
-        report.push({ mod: mod.id, patch: p.id, edit: k, offset: r.offset, delta: e.replace.length - e.find.length });
+        report.push({ mod: mod.id, patch: p.id, edit: k, offset: r.offset, delta: e.replace.length - e.find.length, ...(entry ? { entry } : {}) });
         applied.push({ mod: mod.id, patch: p.id, index: k, edit: e });
       });
     }

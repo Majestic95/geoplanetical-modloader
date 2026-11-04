@@ -1,4 +1,4 @@
-# Mod format (formats 1 and 2)
+# Mod format (formats 1, 2 and 3)
 
 A Geoplanetical Mod Loader mod is a folder with a `mod.json` manifest and the files it names:
 
@@ -7,14 +7,17 @@ A Geoplanetical Mod Loader mod is a folder with a `mod.json` manifest and the fi
 - **Page scripts** (format 2): scripts that change what the game's window shows. They run walled off from the game's
   own code: they can read and change the page's elements, but not the game's objects, its saves or its files (see
   [Page scripts](#page-scripts)).
+- **Wording changes** (format 3): patch files that correct the game's own English and French text, in its main-page
+  bundle. They can change that text and nothing else (see [Wording changes](#wording-changes)).
 
 Nothing in a mod runs on the player's computer outside the game. The loader is strict: an unknown field, a missing
 field or a malformed value is an error that names the file, and the mod is listed as broken. A typo never silently
 drops a change.
 
 The reference implementation is [`patcher/mods.mjs`](../patcher/mods.mjs) (loading and validation),
-[`patcher/patch-engine.mjs`](../patcher/patch-engine.mjs) (applying edits) and
-[`patcher/session.mjs`](../patcher/session.mjs) (running page scripts).
+[`patcher/patch-engine.mjs`](../patcher/patch-engine.mjs) (applying edits),
+[`patcher/page-text.mjs`](../patcher/page-text.mjs) (the rule for wording changes) and
+[`patcher/session.mjs`](../patcher/session.mjs) (delivering code to the game, running page scripts).
 
 ## Folder layout
 
@@ -75,7 +78,7 @@ A mod with only a page script (format 2):
 | `patches` | yes, unless the mod has `scripts` | Non-empty list of patch file paths, relative to the mod folder. Applied in this order. A format-2 mod with `scripts` may leave it out. |
 | `scripts` | no (format 2) | Non-empty list of at most 20 page script paths, relative to the mod folder, each listed once: `.js` files run in the game's window, in this order. A path is made of letters, digits, `_`, `.` and `-`, with `/` between folders, and each folder and file name starts with a letter, digit or `_` (`page/labels.js`). See [Page scripts](#page-scripts). A mod that uses it declares `"format": 2`. |
 | `author` | no | Shown to players beside the mod's name. |
-| `format` | no | The mod format the mod is written for: 1 or 2. Defaults to 1; a mod with `scripts` must say 2. See [Format versions](#format-versions). |
+| `format` | no | The mod format the mod is written for: 1, 2 or 3. Defaults to 1; a mod with `scripts` must say at least 2, and a mod with a patch to `app.bundle.js` must say 3. See [Format versions](#format-versions). |
 | `requires` | no | Ids (text) of mods that must be loaded with this one. They load before it. |
 | `changes` | no | The changelog the launcher shows. Each entry is a sentence, or `{ "group": "Heading", "items": [sentences] }`. |
 
@@ -109,7 +112,7 @@ of them.
 |---|---|---|
 | `id` | yes | Same rules as a mod id (text). Unique within the mod. |
 | `effect` | yes | Non-empty text describing the change. |
-| `bundle` | yes | The game code file the edits apply to: the name (text) of a file in the game's `renderer` folder: lower-case letters, digits and `-`, then `.bundle.js`, such as `simulation-worker.bundle.js`. |
+| `bundle` | yes | The game code file the edits apply to: the name (text) of a file in the game's `renderer` folder that the loader can reach. That is a worker, named `*-worker.bundle.js` (lower-case letters, digits and `-`), such as `simulation-worker.bundle.js`; or, from format 3, `app.bundle.js`, for [wording changes](#wording-changes) only. Any other name, such as `i18n-bootstrap.bundle.js`, is refused when the mod is read: the loader could not deliver it. |
 | `edits` | yes | Non-empty list of edits, applied in order. |
 | `finding` | no | Your own reference for the patch (an issue number or a research note id), or `null`. |
 
@@ -133,6 +136,69 @@ change with each game build. That is why an edit needs both `find` and `anchor`:
 
 If anything does not match (`find` or `anchor` missing or repeated, or too far apart), the whole mod fails with a
 message naming the mod, patch and edit. Nothing is half-applied.
+
+## Wording changes
+
+Format 3. A patch with `"bundle": "app.bundle.js"` corrects the game's own text. English and French are compiled into
+that bundle, in two tables of `"key":"text"` entries (the other languages come from `locales/*.json`, which a mod
+cannot change).
+
+```json
+{
+  "id": "moon-note",
+  "effect": "The Moon's power screen no longer says lunar power is coming soon.",
+  "bundle": "app.bundle.js",
+  "edits": [
+    {
+      "anchor": "\"enr.moon.note\":\"Lunar",
+      "find": "will arrive with colonies. Found a colony on the Moon, then power it.",
+      "replace": "needs a colony: found one on the Moon, then build its modules."
+    }
+  ]
+}
+```
+
+**Why only wording.** `app.bundle.js` runs in the game's main page, beside the functions that write and delete saves.
+Outside these tables, a string cannot be told apart from an internal id or a file name, so changing one could change how
+the game behaves. The table entries already differ from language to language, so the game's logic does not rest on
+them; the few that touch saves are among the entries the rule below keeps as they are.
+
+**The rule.** The loader compares each edit's `find` and `replace` and looks at the part that differs. An edit is
+refused, and the mod with it, unless:
+
+- that part lies inside the quotes of one entry's text. So an edit cannot change code, a key or more than one entry,
+  and cannot add an entry. `find` may reach beyond the quotes to be unique (`"enr.moon.note":"Lunar`), as long as
+  what lies beyond them is unchanged.
+- its key does not start with `saves.`, `settings.saves.`, `quit.`, `mods.`, `modal.` or `pause.`, and is not
+  `menu.quit`. Those entries word the game's saves and save settings, quitting, pause menu, mods screens and confirmation
+  buttons, and changed text there could talk a player into deleting something.
+- the entry's new text is still plain quoted text, using only the escapes `\n \t \r \b \f \v \\ \" \' \` \xHH \uHHHH \u{H...}`,
+  and `\0` when no digit follows it.
+- the entry's new text, once its escapes are read, is at most 4096 characters and contains no `<`, no HTML entity (`&#`,
+  `&name;`, or a bare `&lt`, `&gt`, `&quot` or `&amp`, in any letter case), no `&` that runs into a brace (`&{`, `&lt}`;
+  `R&D` and `R&D {x}` are fine), no `${` and no `"`. The game writes table text into
+  its HTML, and into attributes in double quotes, after expanding its own `{...}` syntax, which can complete a tag from
+  a `<` anywhere in the text. Write "under" rather than `<`, and use typographic quotes (U+201C and U+201D) instead of
+  `"`. An entry that holds any of these today can be edited only by taking them out.
+
+Keep the entry's placeholders, such as `{name}`, as they are; the loader does not check them. Each language is its own
+entry, so a fix to both is two edits. All the other edit rules apply as well, including the
+[determinism](#determinism) check. The launcher's log names every entry a mod changes.
+
+**When it runs.** The loader answers the page's request for the bundle with the changed text, so the original is
+never run, on every page load. If the page has already loaded it when the loader attaches, the loader reloads the page
+once, at the start of the session (and once more if the changed text then cannot be used); it never reloads a game it
+re-attaches to.
+
+**When it fails.** An edit that does not fit is an error like any other: the mod is refused with a message naming it,
+and nothing is started until the player switches it off. If the changed text cannot be used once the game is running,
+the page gets the game's original bundle instead, and the launcher shows an amber warning naming the reason: the game
+and the simulation mods keep working, with the game's own text. In the rare case that the page cannot be reloaded for
+this, the launcher reports a failure and asks the player to close the game.
+
+**Saves and multiplayer.** A wording change touches no simulation code and nothing in a save. It is single-player like
+any other patch. A multiplayer launcher that reads format 2 lists a format-3 mod as needing a newer launcher, so keep
+wording in a mod of its own (with `requires`, if it depends on another) instead of raising your whole mod to format 3.
 
 ## Page scripts
 
@@ -215,7 +281,7 @@ they run outside the simulation, and timers and page state are what they are for
 
 Geoplanetical's simulation is deterministic: the same start and the same steps give the same world, and saves and
 multiplayer depend on that. Replacement text runs inside that simulation, so the loader rejects an edit that adds
-any of these near the edit:
+any of these near the edit (in wording changes too, where text such as `window.` needs `determinismOk`):
 
 - wall-clock time (`Date.now()`, `new Date()`, `performance.now()`)
 - `Math.random()`, `crypto.getRandomValues`, `crypto.randomUUID`
@@ -251,12 +317,14 @@ scripts that change the same element of the page are for their authors to sort o
 
 ## Format versions
 
-The loader reads formats 1 and 2. The format number rises only when a change would be misread by an older loader (a
+The loader reads formats 1, 2 and 3. The format number rises only when a change would be misread by an older loader (a
 new field, or a field whose meaning changes). A mod that uses only format-1 fields does not need a `format` field.
 
 - **Format 1** (loader 0.3.0): patches, with `format`, `author` and `requires`.
 - **Format 2** (loader 0.4.0): adds `scripts`, and lets a mod with scripts leave out `patches`. A mod that uses them
   declares `"format": 2`.
+- **Format 3** (loader 0.7.0): adds [wording changes](#wording-changes), patches to `app.bundle.js`. A mod that has one
+  declares `"format": 3`. Older loaders accepted such a patch and then silently did not deliver it.
 
 A mod that declares a format higher than the loader reads is listed as needing a newer loader: loader 0.3.0 lists a
 format-2 mod that way. It is never half-loaded, and the format is checked before any other field. Loaders older than
@@ -271,4 +339,5 @@ those fields or omits `finding` as broken.
 - [ ] You played a new game with the mod, saved, quit, and reloaded the save through the loader.
 - [ ] Page scripts: they keep working when you change screens, return to the menu and start
       another game.
+- [ ] Wording changes: you read the new text in the game, in each language you changed.
 - [ ] `changes` tells players what changed in plain words.

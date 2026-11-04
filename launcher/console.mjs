@@ -2,6 +2,7 @@
 // at a prompt. Kept for development and for players who prefer it.
 import { createInterface } from 'node:readline/promises';
 import { scanMods, changeGroups } from '../patcher/mods.mjs';
+import { PAGE_BUNDLE } from '../patcher/page-text.mjs';
 import { findGame, gameRunning, steamExe, steamPath } from '../patcher/game.mjs';
 import { PIN, frozenPlaces } from '../patcher/frozen.mjs';
 import {
@@ -194,6 +195,7 @@ function screen({ game, live, frozen, places, play }, mods, broken, enabled) {
       console.log(`        needs: ${needs.join(', ')}`);
     }
     if (m.scripts?.length) console.log('        also runs its own script in the game\'s window');
+    if (m.patches?.some(p => p.bundle === PAGE_BUNDLE)) console.log('        also changes wording in the game\'s window (English and French)');
     if (m.changes?.length) {
       console.log(`        What it changes:`);
       for (const g of changeGroups(m)) {

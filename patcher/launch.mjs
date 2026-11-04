@@ -25,7 +25,7 @@ import { loadMods } from './mods.mjs';
 import { findGame, gameRunning, steamExe, originalBundle } from './game.mjs';
 import { launchAndServe } from './runner.mjs';
 import { PIN, frozenPlaces, checkFolder, checkProblem, steamRunning, copySavesOnce } from './frozen.mjs';
-import { PAGE } from './session.mjs';
+import { PAGE, PAGE_BUNDLE } from './session.mjs';
 
 const argv = process.argv.slice(2);
 const opt = name => argv.includes(name);
@@ -105,6 +105,10 @@ function onSwap({ bundle, status, detail }) {
   if (bundle === PAGE) {
     log(`!!! A PAGE SCRIPT ${status === 'broken' ? 'FAILED' : 'DID NOT RUN'}: ${detail || status}. The workers are unaffected; ` +
       'see the game\'s developer tools console for the error.');
+  } else if (bundle === PAGE_BUNDLE && status !== 'broken') {
+    log(`!!! THE WORDING CHANGES ARE NOT ACTIVE (${status}): ${detail || status}. The game shows its own text; the workers are unaffected.`);
+  } else if (bundle === PAGE_BUNDLE) {
+    log(`!!! THE MOD FAILED in ${bundle}: ${detail || status}. The game's window may not work in this session. Close the game and launch without this mod.`);
   } else if (status === 'unverified') {
     log(`worker ${bundle}: the patched code ran but could not be verified as the one serving the game.`);
   } else if (status === 'broken') {

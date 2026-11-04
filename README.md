@@ -44,7 +44,8 @@ A mod is a `mod.json` manifest and patch files of exact find-and-replace edits o
 nearby stable text. The loader checks every edit before the game starts and refuses the whole mod if anything does
 not match exactly, so a game update can never make a mod patch the wrong code. From mod format 2, a mod can also
 bring page scripts: scripts that change what the game's window shows, such as labels or descriptions, walled off from
-the game's code, saves and settings.
+the game's code, saves and settings. From format 3, a patch can also correct the game's own English and French wording,
+and only that.
 
 - [docs/mod-format.md](docs/mod-format.md): the format specification (fields, anchors, determinism, page scripts,
   load order, requirements, conflicts).

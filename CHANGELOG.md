@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased (0.7.0)
+
+- **Mod format 3: wording changes.** A patch to `app.bundle.js`, the game's main-page bundle, can now correct the
+  game's own English and French text ([docs/mod-format.md](docs/mod-format.md#wording-changes)), and only that: an edit
+  must stay inside the quotes of one entry of the game's language tables, and the new text is at most 4096 characters
+  and may not contain `<`, an HTML entity, `${` or `"` (checked after its escapes are read). Code, keys, new entries,
+  every string outside those tables and the entries wording the game's saves and save settings, quitting, pause menu,
+  mods screens and confirmation buttons are refused, because that bundle runs beside the game's functions for saves. The loader replaces
+  the bundle before any of it runs, on every page load, and reports it as `mods active (app.bundle.js)` or names what
+  went wrong; if the changed text cannot be used, the game's own bundle runs and the window shows an amber warning. The
+  page may be reloaded at the start of a session to do this, never on a re-attach. The window lists which mods change
+  wording, and the log names each entry changed.
+- **Fixed: a patch the loader could not deliver was silently dropped.** A patch to `app.bundle.js` passed every check,
+  built, and then never reached the game. Now a patch to it needs `"format": 3`, and a patch to any other bundle that is
+  not a worker (`i18n-bootstrap.bundle.js`, or a typo) is refused when the mod is read, with a message naming the patch.
+- Patched worker code is unchanged, byte for byte. Mods of formats 1 and 2 load as before, and loader 0.6.0 lists a
+  format-3 mod as needing a newer loader.
+
 ## Unreleased (0.6.0)
 
 - **The frozen game:** the loader plays one version of the game, build `26403824` (game 1.0.8), from its own copy in

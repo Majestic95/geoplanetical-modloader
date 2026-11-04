@@ -91,7 +91,8 @@ WHEN SOMETHING GOES WRONG
 - Two mods that change the same part of the game cannot run together; the loader names both and
   starts nothing. Switch one of them off.
 - An amber warning while you play: a mod's page script (a script some mods run in the game's window)
-  failed. The game runs with the mods, but what that mod shows on screen may be missing.
+  failed, or a mod's wording change is not active (the game shows its own text). The game runs with
+  the mods, but what that mod shows on screen may be missing.
 - Report a problem with a mod to its author, with launcher.log from this folder, the game date and
   the country you play, and the save file if you can.
 

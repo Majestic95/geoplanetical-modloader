@@ -18,13 +18,22 @@
 // own (patcher/page-script.mjs): registered to run at the start of every later page load, and run once in the page
 // already open. They are reported like a bundle named PAGE when their state changes: patched (every script ran),
 // broken (a script threw while starting; the game's own code is untouched), original (one did not run).
+//
+// The main page's bundle (PAGE_BUNDLE, wording changes only: patcher/page-text.mjs) is not a worker: the Fetch domain
+// does see a page's file:// script, so its request is answered with the patched text before any of it runs, on every
+// page load. It is reported under its own name: patched, original with the reason (the game's own code runs; only the
+// wording is missing), or broken if the changed code failed and the page was left that way (on a re-attach, which never
+// reloads, or when the reload failed). A page load that started before the loader could step in is reloaded once, on a
+// fresh attach.
 
 import { MARKER, HANDLER_MARKER } from './patch-engine.mjs';
 import { Script } from 'node:vm';
 import { WORLD, wrap, pageScriptSource, pageCheck } from './page-script.mjs';
+import { PAGE_BUNDLE } from './page-text.mjs';
 
 export const SIM = 'simulation-worker.bundle.js';
 export const PAGE = 'page';
+export { PAGE_BUNDLE };
 
 // Chromium's DevTools receive limit is believed to be 100 MiB per message; a larger evaluate would drop the socket.
 const MAX_MESSAGE_BYTES = 100 * 1024 * 1024;
@@ -61,6 +70,8 @@ async function servingStatus(cdp, sid) {
 // load order; pageState: an object the caller keeps across re-attaches (servePage). reattach: the game was already
 // running under this patcher; never reload the page (it would lose unsaved play), and report what running workers serve.
 export async function attachAndServe(cdp, { pageUrl, payloads, scripts = [], pageState = {}, log, onSwap = () => {}, settleMs = 3000, reattach = false }) {
+  // Before attaching: this blocks for a moment, and from the attach on the loader answers the page and its workers.
+  const pageBundle = payloads.has(PAGE_BUNDLE) ? preparePageBundle(payloads.get(PAGE_BUNDLE)) : null;
   const page = await waitFor('the game page', async () => {
     const { targetInfos } = await cdp.send('Target.getTargets');
     return targetInfos.find(t => t.type === 'page' && pageUrl.test(t.url)) || null;
@@ -68,7 +79,8 @@ export async function attachAndServe(cdp, { pageUrl, payloads, scripts = [], pag
   const { sessionId: pageSession } = await cdp.send('Target.attachToTarget', { targetId: page.targetId, flatten: true });
   log(`attached to page ${page.url}`);
 
-  const expressions = new Map([...payloads].map(([b, text]) => [b, `${text}\n//# sourceURL=${SOURCE_URL(b)}`]));
+  const workerPayloads = new Map([...payloads].filter(([b]) => b !== PAGE_BUNDLE));
+  const expressions = new Map([...workerPayloads].map(([b, text]) => [b, `${text}\n//# sourceURL=${SOURCE_URL(b)}`]));
   const messageBytes = new Map([...expressions].map(([b, e]) => [b, Buffer.byteLength(JSON.stringify(e)) + 256]));
   const swaps = new Map(); // worker sessionId -> { bundle, breakpointId }
   const results = [];
@@ -82,7 +94,7 @@ export async function attachAndServe(cdp, { pageUrl, payloads, scripts = [], pag
     const bundle = basename(targetInfo.url);
     try {
       await cdp.send('Target.setAutoAttach', AUTO_ATTACH, sessionId);
-      if (!payloads.has(bundle)) {
+      if (!workerPayloads.has(bundle)) {
         log(`worker ${bundle}: original`);
         return void (await release());
       }
@@ -104,7 +116,7 @@ export async function attachAndServe(cdp, { pageUrl, payloads, scripts = [], pag
     } catch (e) {
       swaps.delete(sessionId);
       log(`worker ${bundle}: attach failed (${e.message}); releasing`);
-      if (payloads.has(bundle)) report({ bundle, status: 'original', marker: null, detail: `attach failed: ${e.message}` });
+      if (workerPayloads.has(bundle)) report({ bundle, status: 'original', marker: null, detail: `attach failed: ${e.message}` });
       await release()?.catch(() => {});
     }
   });
@@ -178,13 +190,20 @@ export async function attachAndServe(cdp, { pageUrl, payloads, scripts = [], pag
   for (const [b, n] of messageBytes) {
     if (n > 0.9 * MAX_MESSAGE_BYTES) log(`WARNING ${b}: ${(n / 1048576).toFixed(1)} MiB as one DevTools message, near the ${MAX_MESSAGE_BYTES / 1048576} MiB limit`);
   }
+  // First of all, so that a page load still under way can be caught.
+  let pageReloaded = false;
+  const watchPageBundle = pageBundle
+    ? await servePageBundle(cdp, pageSession, pageBundle, { log, onSwap, reattach, pageState, onReload: () => { pageReloaded = true; } })
+    : null;
   await cdp.send('Target.setAutoAttach', AUTO_ATTACH, pageSession);
-  log(`watching workers for ${[...payloads.keys()].join(', ') || 'nothing (baseline)'}`);
+  log(`watching workers for ${[...workerPayloads.keys()].join(', ') || (pageBundle ? 'nothing (no worker has changes)' : 'nothing (baseline)')}`);
   // After the workers are watched, so a worker starting now is not missed.
   if (scripts.length) await servePage(cdp, pageSession, scripts, log, onSwap, reattach, pageState);
+  // Not waited for: it ends when the state of the page load is known, and it reports through onSwap.
+  watchPageBundle?.().catch(e => log(`${PAGE_BUNDLE}: could not check the page (${clean(e.message)})`));
 
   await sleep(settleMs);
-  if (!reattach && staleWorker && !results.length) {
+  if (!reattach && staleWorker && !results.length && !pageReloaded) {
     log('a patched worker started before attach; reloading the page once');
     staleWorker = false;
     await cdp.send('Page.reload', { ignoreCache: true }, pageSession);
@@ -195,6 +214,114 @@ export async function attachAndServe(cdp, { pageUrl, payloads, scripts = [], pag
 // Text from the page (a script's error) goes to the log: control and direction characters out, and kept short.
 // eslint-disable-next-line no-control-regex
 const clean = s => String(s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, '?').slice(0, 300);
+
+// Read from the page's own world (a read only): the prelude ran, the postlude ran, and whether the page has asked for the
+// bundle. A script runs in one piece, so this never lands in the middle of it: marker without postlude means it threw.
+const PAGE_BUNDLE_CHECK = `JSON.stringify({page:location.pathname,marker:globalThis.${MARKER}??null,` +
+  `done:Object.prototype.hasOwnProperty.call(globalThis,"${HANDLER_MARKER}"),` +
+  `tag:[...document.scripts].some(s=>(s.getAttribute("src")||"").split("/").pop()==="${PAGE_BUNDLE}")})`;
+const PAGE_BUNDLE_POLL_MS = 250;
+const PAGE_BUNDLE_RUN_MS = 60000; // once served, or on a re-attach, how long the replacement may take to run
+const PAGE_BUNDLE_REQUEST_MS = 1500; // from the page's script element to its request reaching the loader
+
+// { body (base64), problem (why it cannot be served, or null) }.
+function preparePageBundle(text) {
+  const body = Buffer.from(text, 'utf8').toString('base64');
+  let problem = null;
+  try { new Script(text, { filename: PAGE_BUNDLE }); } catch (e) { problem = `the patched code does not compile: ${clean(e.message)}`; }
+  if (!problem && body.length + 256 > MAX_MESSAGE_BYTES) problem = `the patched code is ${body.length} bytes as a DevTools message (limit ${MAX_MESSAGE_BYTES})`;
+  return { body, problem };
+}
+
+// Serves the patched main-page bundle: the interception is on when this returns, and the function it returns starts
+// watching the page load already open. Every paused request is answered, or the page would hang. If the replacement
+// cannot be used, `withheld` holds why and the original is served: the player gets the game with its own wording. If it
+// failed in the page (it threw, or never ran), that lasts for the session, kept in pageState across attaches, and the
+// page is reloaded once for it, so a failure cannot loop. A re-attach never reloads: that could lose unsaved play.
+async function servePageBundle(cdp, pageSession, { body, problem }, { log, onSwap, reattach, pageState, onReload }) {
+  let withheld = pageState.pageBundleWithheld ?? problem;
+  let load = 0, navigations = 0, served = false, servedAt = 0, reloaded = false, last = null;
+  cdp.onClose(() => { load++; }); // ends a watch still running
+  const report = (status, detail, marker = null) => {
+    if (`${status}|${detail}` === last) return;
+    last = `${status}|${detail}`;
+    log(`${PAGE_BUNDLE}: ${status === 'patched' ? 'PATCHED' : status.toUpperCase()}${detail ? `: ${detail}` : ''}`);
+    onSwap({ bundle: PAGE_BUNDLE, status, marker, detail, sessionId: pageSession });
+  };
+  const reload = (ifNot = 'original') => {
+    onReload();
+    return cdp.send('Page.reload', { ignoreCache: true }, pageSession).catch(e => report(ifNot, `could not reload the page: ${clean(e.message)}`));
+  };
+  const read = () => cdp.send('Runtime.evaluate', { expression: PAGE_BUNDLE_CHECK, returnByValue: true }, pageSession)
+    .then(r => JSON.parse(r.result.value)).catch(() => null);
+  const failed = detail => {
+    withheld = detail;
+    pageState.pageBundleWithheld = detail;
+    if (reattach) return report('broken', detail);
+    log(`${PAGE_BUNDLE}: ${detail}; reloading the page once with the game's own code`);
+    return reload('broken');
+  };
+  const watch = async () => {
+    const id = ++load;
+    let tagSince = 0;
+    while (id === load) {
+      const v = await read();
+      if (id !== load) return;
+      if (v && /\/renderer\/index\.html$/i.test(v.page)) {
+        if (v.marker) return v.done ? report('patched', '', v.marker) : failed('the game\'s code with the changes threw while starting');
+        if (v.tag && withheld) return report('original', withheld);
+        if (v.tag && served && Date.now() - servedAt > PAGE_BUNDLE_RUN_MS) return failed('the patched code was served but did not run');
+        if (v.tag && !served) {
+          // The tag shows first when a request is on its way; after a dropped connection the patched code, served by the
+          // session before, may still be loading. So neither is acted on at first sight.
+          tagSince ||= Date.now();
+          const waited = Date.now() - tagSince;
+          if (reattach && waited > PAGE_BUNDLE_RUN_MS) return report('original', 'this page load started without the patched code');
+          if (!reattach && waited > PAGE_BUNDLE_REQUEST_MS) {
+            if (reloaded) return report('original', 'the page loaded its code without the loader seeing the request');
+            reloaded = true;
+            log(`${PAGE_BUNDLE}: the page loaded it before the loader could step in; reloading the page once`);
+            return reload();
+          }
+        }
+      }
+      await sleep(PAGE_BUNDLE_POLL_MS);
+    }
+  };
+
+  cdp.on('Fetch.requestPaused', async (p, sid) => {
+    if (sid !== pageSession) return;
+    const ours = !withheld && basename(p.request.url) === PAGE_BUNDLE;
+    const atRequest = navigations;
+    try {
+      if (!ours) return void (await cdp.send('Fetch.continueRequest', { requestId: p.requestId }, sid));
+      served = true;
+      servedAt = Date.now();
+      await cdp.send('Fetch.fulfillRequest', {
+        requestId: p.requestId, responseCode: 200, body,
+        responseHeaders: [{ name: 'Content-Type', value: 'text/javascript; charset=utf-8' }],
+      }, sid);
+    } catch (e) {
+      // The page was navigating away, or the answer failed: the watch sees the request as not served.
+      if (ours && atRequest === navigations) served = false;
+      log(`${PAGE_BUNDLE}: could not answer the page's request (${clean(e.message)})`);
+      await cdp.send('Fetch.continueRequest', { requestId: p.requestId }, sid).catch(() => {});
+    }
+  });
+  cdp.on('Page.frameNavigated', (p, sid) => {
+    if (sid !== pageSession || p.frame.parentId) return undefined;
+    navigations++;
+    served = false;
+    return watch();
+  });
+  try {
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `*/renderer/${PAGE_BUNDLE}`, resourceType: 'Script', requestStage: 'Request' }] }, pageSession);
+    await cdp.send('Page.enable', {}, pageSession);
+  } catch (e) {
+    withheld = `could not watch the page: ${clean(e.message)}`;
+  }
+  return watch;
+}
 
 // Page scripts: the check is set up first (it waits until the first injection is done), then each script is registered
 // for every later page load in its mod's world and run in the page already open. The state is reported when it

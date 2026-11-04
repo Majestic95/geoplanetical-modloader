@@ -277,7 +277,7 @@ export default String.raw`<!doctype html>
     } else if (s.phase === 'playing') {
       play.disabled = true; play.textContent = 'Game running'; pn.textContent = '';
       banner(s.warning ? 'warn' : 'ok', (s.message ? s.message + ' ' : '') + 'The game runs with the mods. ' +
-        (s.warning ? 'A mod\u2019s page script failed or did not run (see Details below): what that mod shows on screen may be missing; the game itself is unaffected. ' : '') +
+        (s.warning ? 'A mod\u2019s page script or wording change failed or did not run (see Details below): what that mod shows on screen may be missing; the game itself is unaffected. ' : '') +
         'You can minimise or close this window: the loader keeps the mods active in the background until you quit the game. Saves made now need the mods to load correctly.');
     } else {
       play.disabled = true; play.textContent = 'Session over'; pn.textContent = 'You can close the loader.';
@@ -316,6 +316,7 @@ export default String.raw`<!doctype html>
           : made + '; your Steam game is build ' + s.game.build + '. The game has updated: wait for an updated version of this mod' + (m.builds.indexOf(s.pin.build) >= 0 ? ', or play the frozen game, which it is made for.' : '.')));
       }
       if (m.scripts) card.appendChild(el('div', 'mod-note', 'Also runs its own script in the game\u2019s window.'));
+      if (m.wording) card.appendChild(el('div', 'mod-note', 'Also changes wording in the game\u2019s window (English and French).'));
       if (m.requires.length) {
         var needs = m.requires.map(function (id) {
           var r = s.mods.filter(function (o) { return o.id === id; })[0];
