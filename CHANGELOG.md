@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.7.0)
+## 0.7.0 (2026-11-04)
 
 - **Mod format 3: wording changes.** A patch to `app.bundle.js`, the game's main-page bundle, can now correct the
   game's own English and French text ([docs/mod-format.md](docs/mod-format.md#wording-changes)), and only that: an edit
@@ -18,7 +18,7 @@
 - Patched worker code is unchanged, byte for byte. Mods of formats 1 and 2 load as before, and loader 0.6.0 lists a
   format-3 mod as needing a newer loader.
 
-## Unreleased (0.6.0)
+## 0.6.0 (not released on its own; first released in 0.7.0)
 
 - **The frozen game:** the loader plays one version of the game, build `26403824` (game 1.0.8), from its own copy in
   `%LOCALAPPDATA%\GeoplaneticalModLauncher\game`, which Steam updates do not change: a game update no longer stops the
