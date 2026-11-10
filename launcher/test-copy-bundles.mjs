@@ -16,7 +16,9 @@ import {
   RENDERER_OUTSIDE, ORIGINAL, NEW, leftInCopy, settleCopy, writeBundles, restoreBundles, noteWrap, readNotes, noteJudge, newNonce,
 } from '../patcher/copy-bundles.mjs';
 import { repairPlaces, frozenStatus } from './freeze.mjs';
-import { buildMods, prepareFrozen, playSession, outsideMods, programRefusal } from './core.mjs';
+import {
+  buildMods, prepareFrozen, playSession, outsideMods, programRefusal, programArgs, untrusted, trustGiven, trust, trustKey, confirmTrusted, programSession,
+} from './core.mjs';
 
 let failed = 0;
 async function expect(name, fn, check) {
@@ -230,13 +232,87 @@ try {
     settleCopy(g, { inUse: no });
     return b.error;
   }, r => /Geoplanetical is running/.test(r));
-  await expect('programs: not handed mods they would play unmodded (code outside the window)', () => {
+  await expect('programs: such mods are handed over with the frozen game, refused with the Steam game', () => {
     const exe = join(root, 'prog.exe');
     writeFileSync(exe, 'MZ');
     const p = { exe, confirmed: exe, name: 'Prog' };
-    const args = { game: { ...frozen, ready: true }, broken: [], settings: { enabled: {} }, saved: {} };
-    return [programRefusal(p, { ...args, mods: [simMod, pageMod] }), programRefusal(p, { ...args, mods: [pageMod] })];
-  }, r => /simmod changes the game's simulation/.test(r[0]) && /not Prog/.test(r[0]) && r[1] === null);
+    const args = { broken: [], settings: { enabled: {} }, saved: {}, mods: [simMod, pageMod] };
+    return [programRefusal(p, { ...args, game: { ...frozen, ready: true } }), programRefusal(p, { ...args, game: live })];
+  }, r => r[0] === null && /simmod changes the game's simulation/.test(r[1]) && /never in your Steam game/.test(r[1]));
+  await expect('programs: the bundles written for them are named (--written)', () => [programArgs('C:\\L', 'C:\\G'), programArgs('C:\\L', 'C:\\G', [SIM, 'b-worker.bundle.js'])],
+    r => r[0] === '--loader C:\\L --game C:\\G' && r[1] === `--loader C:\\L --game C:\\G --written ${SIM},b-worker.bundle.js`);
+  await expect('trust: keyed on version and patches; the answer must name each mod with its key', () => {
+    const settings = { trusted: { simmod: '0.9.0', ['__proto__']: '1' } };
+    const key = trustKey(simMod);
+    const before = untrusted(settings, [simMod]).length;
+    const partial = trustGiven([simMod, pageMod], [`simmod@${key}`]), wrong = trustGiven([simMod], ['simmod@1.0.0']), no = trustGiven([simMod], `simmod@${key}`);
+    trust(settings, [simMod]);
+    const sameVersionNewCode = { ...simMod, patches: [{ ...simMod.patches[0], edits: [{ find: 'await null', replace: 'await null; other()', anchor: 'await null' }] }] };
+    return [before, partial, wrong, no, untrusted(settings, [simMod]).length, untrusted(settings, [sameVersionNewCode]).length,
+      untrusted({}, [simMod]).length, untrusted({ trusted: {} }, [{ ...simMod, id: 'toString' }]).length, key.startsWith('1.0.0#')];
+  }, r => r.join() === '1,false,false,false,0,1,1,1,true');
+
+  await expect('trust: the window\'s check refuses without the answer, records it with the answer, then asks no more', () => {
+    const settings = { trusted: {} };
+    let saved = 0;
+    const deps = { save: () => { saved++; }, log: () => {} };
+    const without = confirmTrusted(settings, [simMod, pageMod], undefined, deps);
+    const wrongVersion = confirmTrusted(settings, [simMod], ['simmod@0.0.1'], deps);
+    const ok = confirmTrusted(settings, [simMod], [`simmod@${trustKey(simMod)}`], deps);
+    const again = confirmTrusted(settings, [simMod], undefined, deps);
+    const newVersion = confirmTrusted(settings, [{ ...simMod, version: '1.1.0' }], undefined, deps);
+    return [/Confirm first that you want to play simmod, pagemod/.test(without), !!wrongVersion, ok, again, saved, settings.trusted.simmod === trustKey(simMod), !!newVersion];
+  }, r => r[0] && r[1] && r[2] === null && r[3] === null && r[4] === 1 && r[5] && r[6]);
+  // A program's session: the mods written before it starts, kept while it runs, put back once it and the game are gone.
+  await expect('program session: written for the program, put back once it has exited', async () => {
+    rmSync(notes, { force: true });
+    let seenWritten = null, polls = 0;
+    const end = await programSession({
+      name: 'Prog', frozen: { dir: g, notes }, disk: new Map([[SIM, SIM_TEXT.replace('await null', 'await null; globalThis.m = 1')]]), log: () => {},
+      start: async () => { seenWritten = readFileSync(simFile(g), 'utf8'); loadIn(simFile(g)); return { pid: 4242 }; },
+      inUse: no, alive: () => ++polls < 3, everyMs: 5,
+    });
+    return [/globalThis\.m = 1/.test(seenWritten) && /gpml/.test(seenWritten), polls >= 3, end.problem, /were active/.test(end.message), await tree(g) === pristine];
+  }, r => r[0] && r[1] && r[2] === false && r[3] && r[4]);
+  await expect('program session: a process given the program\'s id after it exited does not keep the session going', async () => {
+    let looks = 0;
+    const end = await programSession({
+      name: 'Prog', frozen: { dir: g, notes }, disk: new Map([[SIM, 'X']]), log: () => {},
+      start: async () => ({ pid: 77 }), inUse: no, everyMs: 5,
+      alive: () => ++looks === 2 ? false : true, // exited at the 2nd look; the id is someone else's from then on
+    });
+    return [end.problem, await tree(g) === pristine];
+  }, r => r[0] === false && r[1]);
+  await expect('program session: a program that cannot start leaves the game\'s own files', async () => {
+    const end = await programSession({
+      name: 'Prog', frozen: { dir: g, notes }, disk: new Map([[SIM, 'X']]), log: () => {},
+      start: async () => ({ error: 'Windows did not start it' }), inUse: no, alive: no, everyMs: 5,
+    });
+    return [end.error, await tree(g) === pristine];
+  }, r => r[0] === 'Windows did not start it' && r[1]);
+  await expect('program session: nothing written, nothing started while the game runs', async () => {
+    let called = false;
+    const end = await programSession({
+      name: 'Prog', frozen: { dir: g, notes }, disk: new Map([[SIM, 'X']]), log: () => {},
+      start: async () => { called = true; return { pid: 1 }; }, inUse: yes, alive: no, everyMs: 5,
+    });
+    return [/Geoplanetical is running/.test(end.error), called, await tree(g) === pristine];
+  }, r => r[0] && r[1] === false && r[2]);
+  await expect('program session: without a process id, kept until the game has run and closed', async () => {
+    // (the game starts late, at the 8th look, as after a multiplayer lobby: the files must still be written then)
+    let looks = 0;
+    const whileRunning = [];
+    const end = await programSession({
+      name: 'Prog', frozen: { dir: g, notes }, disk: new Map([[SIM, 'X']]), log: () => {},
+      start: async () => ({ pid: null }), alive: no, everyMs: 5,
+      inUse: () => {
+        const running = ++looks >= 8 && looks <= 10;
+        if (running) whileRunning.push(readFileSync(simFile(g), 'utf8').includes('gpml'));
+        return running;
+      },
+    });
+    return [whileRunning.join(), end.problem, await tree(g) === pristine];
+  }, r => r[0] === 'true,true,true' && r[1] === false && r[2]);
   await expect('build: a damaged original kept aside is the copy\'s fault, not the mod\'s', async () => {
     renameSync(simFile(g), simFile(g) + ORIGINAL); writeFileSync(simFile(g) + ORIGINAL, 'DAMAGED'); writeFileSync(simFile(g), 'PATCHED');
     const b = buildMods(frozen, [simMod], () => {}, { inUse: no });

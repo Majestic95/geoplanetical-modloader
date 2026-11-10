@@ -8,6 +8,7 @@ import { PIN, frozenPlaces } from '../patcher/frozen.mjs';
 import {
   VERSION, PRODUCT, MODS, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
   playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY, outsideMods,
+  untrusted, trust, TRUST_TEXT, plain,
 } from './core.mjs';
 import { repairPlaces, frozenStatus, copyIn, steamDownload } from './freeze.mjs';
 
@@ -93,6 +94,16 @@ export async function runConsole({ dryRun, port, gameDirArg }) {
       if (r === 'q') break;
     }
     if (gameRunning()) continue;
+    // Mods that run with the same access to the PC as any program: confirmed once, and again when their code changes (launcher/core.mjs).
+    const asks = game.frozen && !dryRun ? untrusted(settings, outsideMods(chosen, game)) : [];
+    if (asks.length) {
+      // (the mod's own text, with control and direction characters replaced and cut short, as in the log)
+      console.log(`\n${asks.map(m => plain(`${m.name} ${m.version} (${m.id})${m.author ? ` by ${m.author}` : ''}`).slice(0, 160)).join(', ')}`);
+      console.log(wrap(TRUST_TEXT, 104, '  ', '  '));
+      if ((await rl.question('Type yes and Enter to play them, or Enter to go back: ')).trim().toLowerCase() !== 'yes') continue;
+      trust(settings, asks); saveSettings(settings, log);
+      log(`confirmed by the player: ${asks.map(m => `${m.name} ${m.version}`).join(', ')} run with the same access to the PC as any program`);
+    }
     const built = buildMods(game, chosen, log);
     if (built.error) { console.log(built.error.replace('(Frozen game, above)', '(G then Enter)')); continue; }
     let frozenDir = null;

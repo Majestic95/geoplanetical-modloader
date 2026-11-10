@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, appendFileSync, statSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, join, basename, resolve, isAbsolute, normalize, relative, sep } from 'node:path';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer as createNetServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { Script, compileFunction } from 'node:vm';
@@ -19,13 +20,19 @@ import { PIN, checkFolder, checkProblem, copySavesOnce, steamRunning, errorCode 
 import { PAGE, PAGE_BUNDLE } from '../patcher/session.mjs';
 import { settleCopy, writeBundles, restoreBundles, noteWrap, readNotes, noteJudge, newNonce } from '../patcher/copy-bundles.mjs';
 
-export const VERSION = '0.7.0';
+export const VERSION = '0.8.0';
 export const PRODUCT = 'Geoplanetical Mod Loader';
 // Packaged: everything sits beside the executable. Development: the repository root (mods/ is the repo's).
 export const BASE = isSea() ? dirname(process.execPath) : join(dirname(fileURLToPath(import.meta.url)), '..');
 export const MODS = join(BASE, 'mods');
 const SETTINGS = join(BASE, 'launcher-settings.json');
 export const LOG = join(BASE, 'launcher.log');
+
+// A mod's own text (its name, author, version) for one line of the text menu: control characters (line breaks and
+// terminal escapes too) and direction characters replaced, as in the log.
+const UNSAFE = new RegExp(`[${[[0x00, 0x1f], [0x7f, 0x9f], [0x2028, 0x2029], [0x202a, 0x202e], [0x2066, 0x2069]]
+  .map(([a, b]) => `${String.fromCharCode(a)}-${String.fromCharCode(b)}`).join('')}]`, 'g');
+export const plain = s => String(s).replace(UNSAFE, '?');
 
 // A log that writes launcher.log and passes each line to the front end's `show(line)`. Messages can carry text from a
 // mod (its name, a file name, a page script's error): control and direction characters are replaced and further lines
@@ -43,12 +50,15 @@ export function makeLog(show) {
 // The settings file is the player's to edit: anything but a plain object (or a gameDir that is not text) is ignored.
 export function readSettings() {
   let s;
-  try { s = JSON.parse(readFileSync(SETTINGS, 'utf8')); } catch (e) { return { enabled: {}, programs: [], ...(e.code === 'ENOENT' ? {} : { unreadable: true }) }; }
-  if (!s || typeof s !== 'object' || Array.isArray(s)) return { enabled: {}, programs: [], unreadable: true };
+  try { s = JSON.parse(readFileSync(SETTINGS, 'utf8')); } catch (e) { return { enabled: {}, programs: [], trusted: {}, ...(e.code === 'ENOENT' ? {} : { unreadable: true }) }; }
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return { enabled: {}, programs: [], trusted: {}, unreadable: true };
   if (typeof s.gameDir !== 'string') delete s.gameDir;
   if (s.play !== 'live' && s.play !== 'frozen') delete s.play;
   if (!s.enabled || typeof s.enabled !== 'object' || Array.isArray(s.enabled)) s.enabled = {};
   s.programs = cleanPrograms(s.programs);
+  // (a mod id and the version and patch hash confirmed, trustKey; anything else is left out)
+  s.trusted = s.trusted && typeof s.trusted === 'object' && !Array.isArray(s.trusted)
+    ? Object.fromEntries(Object.entries(s.trusted).filter(([, v]) => typeof v === 'string')) : {};
   return s;
 }
 // Writes the settings (`unreadable` is not a setting); true when written.
@@ -87,6 +97,34 @@ export function outsideMods(mods, game) {
   return mods.filter(m => m.patches.some(p => outside.has(p.bundle)));
 }
 const names = list => list.map(m => m.name).join(', ');
+
+// The player's one-time confirmation of such mods (launcher-settings.json `trusted`: { <mod id>: <trustKey> }), asked
+// before they first play and again when their code changes. untrusted: the mods among `list` not confirmed;
+// trustGiven: whether `given` (the window's answer, ["<id>@<trustKey>", ...]) confirms each;
+// trust records them.
+// What is confirmed is the version and the content of the mod's patches (trustKey: "<version>#<sha256 prefix>"): a
+// mod whose code changes, with or without a new version, or another mod with the same id and version, is asked again.
+export const trustKey = m => `${m.version}#${createHash('sha256').update(JSON.stringify(m.patches ?? [])).digest('hex').slice(0, 16)}`;
+export const untrusted = (settings, list) => list.filter(m => !(Object.hasOwn(settings.trusted ?? {}, m.id) && settings.trusted[m.id] === trustKey(m)));
+export const trustGiven = (list, given) => Array.isArray(given) && list.every(m => given.includes(`${m.id}@${trustKey(m)}`));
+export function trust(settings, list) {
+  settings.trusted = { ...(settings.trusted ?? {}) };
+  for (const m of list) settings.trusted[m.id] = trustKey(m);
+}
+// The window's check before Play or a program's start: the mods of `list` not yet confirmed must each be named in
+// `given` (the dialog's answer); then they are recorded (save()) and logged. Returns the refusal, or null.
+export function confirmTrusted(settings, list, given, { save, log }) {
+  const asks = untrusted(settings, list);
+  if (!asks.length) return null;
+  if (!trustGiven(asks, given)) return `Confirm first that you want to play ${names(asks)}: they run with the same access to your PC as any program.`;
+  trust(settings, asks);
+  save();
+  log(`confirmed by the player: ${asks.map(m => `${m.name} ${m.version}`).join(', ')} run with the same access to the PC as any program`);
+  return null;
+}
+export const TRUST_TEXT = 'They change the simulation, which this game version runs outside the game window. Written into the frozen game ' +
+  'while you play, their code runs with the same access to your PC as any program you install: it could read, change or delete ' +
+  'your files. Play them only if you trust their authors. You are asked again whenever the code of a mod changes.';
 // The game Play and the programs use: the frozen game, or the live one (findGame's, or null when not found).
 export const chosenGame = (settings, frozen, live) => (playChoice(settings) === 'live' ? live : frozen);
 
@@ -160,12 +198,12 @@ export function programRefusal(p, { confirmed = false, dryRun = false, game, mod
   if (game.frozen && !game.ready) return FROZEN_NOT_READY;
   const { error, chosen } = chooseMods(mods, settings, game, broken);
   if (error) return error;
-  // A program starts the game itself: code this game version runs outside its window is changed only by the loader's
-  // own Play (playSession), so a program would play those mods unmodded.
+  // Code this game version runs outside its window: the loader writes it into the frozen copy for the program's session
+  // (programSession); the Steam game is never written.
   const outside = outsideMods(chosen, game);
-  if (outside.length) {
+  if (outside.length && !game.frozen) {
     return `${names(outside)} ${outside.length > 1 ? 'change' : 'changes'} the game's simulation, which this game version runs outside the game ` +
-      `window: for now only this loader's Play with mods can apply that, not ${name}. Switch ${outside.length > 1 ? 'them' : 'it'} off to start ${name}.`;
+      `window: the loader can change that only in the frozen game, never in your Steam game. Play the frozen game, or switch ${outside.length > 1 ? 'them' : 'it'} off.`;
   }
   if (!sameSwitches(saved, settings.enabled)) {
     return `The mod switches could not be saved to launcher-settings.json (see the log), and ${name} reads them from there. ` +
@@ -193,9 +231,10 @@ const pidAlive = pid => { try { process.kill(pid, 0); return true; } catch (e) {
 // with the backslashes before a quote and at the end doubled.
 export const quoteArg = a => (a && !/[\s"]/.test(a) ? a : `"${a.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`);
 
-// A program's arguments: the loader's folder, and the frozen copy's folder when the player plays the frozen game
-// (docs/authoring.md#programs).
-export const programArgs = (loaderDir, gameDir = null) => `--loader ${quoteArg(loaderDir)}${gameDir ? ` --game ${quoteArg(gameDir)}` : ''}`;
+// A program's arguments: the loader's folder, the frozen copy's folder when the player plays the frozen game, and the
+// bundles the loader wrote into that copy for the program's session (docs/authoring.md#programs).
+export const programArgs = (loaderDir, gameDir = null, written = []) => `--loader ${quoteArg(loaderDir)}${gameDir ? ` --game ${quoteArg(gameDir)}` : ''}` +
+  `${written.length ? ` --written ${quoteArg(written.join(','))}` : ''}`;
 
 // Starts `exe --loader "<loader folder>" [--game "<frozen copy>"]` in the program's folder through Windows (ShellExecute, as Explorer does): a
 // console program gets a console window of its own. Windows shows no warning for a downloaded program started this way
@@ -204,7 +243,7 @@ export const programArgs = (loaderDir, gameDir = null) => `--loader ${quoteArg(l
 // could start another file). Resolves { pid } (null when Windows does not say) when started, or { error }. Gives up
 // after `timeoutMs` (a warning nobody answers).
 export const START_TIMEOUT_MS = 120000;
-export function startProgram(exe, loaderDir = BASE, { timeoutMs = START_TIMEOUT_MS, gameDir = null } = {}) {
+export function startProgram(exe, loaderDir = BASE, { timeoutMs = START_TIMEOUT_MS, gameDir = null, written = [] } = {}) {
   const command = "$ErrorActionPreference = 'Stop'; try { $i = New-Object System.Diagnostics.ProcessStartInfo; " +
     '$i.FileName = $env:GPML_PROGRAM; $i.Arguments = $env:GPML_PROGRAM_ARGS; $i.WorkingDirectory = $env:GPML_PROGRAM_DIR; ' +
     '$i.UseShellExecute = $true; Remove-Item Env:GPML_PROGRAM, Env:GPML_PROGRAM_ARGS, Env:GPML_PROGRAM_DIR; ' +
@@ -214,7 +253,7 @@ export function startProgram(exe, loaderDir = BASE, { timeoutMs = START_TIMEOUT_
     let out = '';
     const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], {
       windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
-      env: { ...process.env, GPML_PROGRAM: exe, GPML_PROGRAM_ARGS: programArgs(loaderDir, gameDir), GPML_PROGRAM_DIR: dirname(exe) },
+      env: { ...process.env, GPML_PROGRAM: exe, GPML_PROGRAM_ARGS: programArgs(loaderDir, gameDir, written), GPML_PROGRAM_DIR: dirname(exe) },
     });
     const timer = setTimeout(() => { child.kill(); done({ error: `Windows did not start it within ${timeoutMs / 1000} seconds` }); }, timeoutMs);
     child.stdout.on('data', d => { out += d; });
@@ -382,6 +421,134 @@ async function untilClosed(log, inUse, { everyMs = 2000, misses = 3 } = {}) {
   }
 }
 
+// The part of a session for the bundles the game runs outside its window (`disk`, from buildMods), shared by playSession
+// and programSession. start() writes them into the frozen copy (`frozen`: { dir, notes }), the last step before the game
+// starts, and watches the notes their code leaves: noted({ bundle, status, detail }) gets each (patched once loaded;
+// broken if it threw while loading or stopped with an error later); a bundle that never started is not a problem,
+// since no other code can run in its place. start() returns null, or why nothing was written (for the player).
+// finish() waits until no Geoplanetical process runs (even when the connection to the game was lost), reports the
+// notes' last word and puts the copy back: { changed, idle, putBackLater, damaged }.
+export function copySession({ frozen, disk, log, noted, inUse = gameRunning, everyMs = 2000 }) {
+  const nonce = newNonce(), judge = noteJudge(disk.keys());
+  const notesNow = () => readNotes(frozen.notes, nonce, disk.keys());
+  let written = null, watch = null;
+  return {
+    start() {
+      const texts = new Map([...disk].map(([bundle, text]) => [bundle, noteWrap(text, { file: frozen.notes, nonce, bundle })]));
+      // The game may have been started (by the player or a program) while the mods were built or the saves copied:
+      // then one of its processes could load a file being changed. Looked at once more right before the write.
+      let running;
+      try { running = inUse(); } catch { running = true; }
+      if (running) {
+        log('Geoplanetical is running: the mods were not written into the frozen game; nothing was started');
+        return 'Geoplanetical is running. Close it, then try again. Nothing was started.';
+      }
+      try {
+        rmSync(frozen.notes, { force: true });
+        written = writeBundles(frozen.dir, texts, { inUse });
+      } catch (e) {
+        log(`could not write the mods into the frozen game: ${errorCode(e)}${e.code ? '' : ` (${e.message})`}`);
+        return `The mods could not be written into the frozen game (${errorCode(e)}). Nothing was started; try again.`;
+      }
+      log(`written into the frozen game for this session: ${[...written].map(([b, sum]) => `${b} (SHA-256 ${sum.slice(0, 16)}...)`).join(', ')}`);
+      watch = setInterval(() => { for (const r of judge.poll(notesNow())) noted(r); }, 1000);
+      return null;
+    },
+    async finish() {
+      const out = { changed: false, idle: false, putBackLater: false, damaged: null };
+      if (!written) return out;
+      await untilClosed(log, inUse, { everyMs });
+      clearInterval(watch);
+      const counts = notesNow();
+      for (const r of judge.poll(counts)) noted(r);
+      const last = judge.end(counts);
+      for (const r of last) {
+        if (r.status === 'broken' && !r.reported) noted({ bundle: r.bundle, status: 'broken', detail: r.detail });
+        if (r.status === 'idle') log(`${r.bundle}: did not start this session (the game closed before it needed it, or the loader saw no note from it)`);
+      }
+      out.idle = last.every(r => r.status === 'idle');
+      try {
+        const back = restoreBundles(frozen.dir, written, { inUse, log });
+        if (back.changed.length) {
+          out.changed = true;
+          log(`the frozen game's ${back.changed.join(', ')} changed while the game ran (not by the loader): the mods in it may not have been active.`);
+        }
+        if (back.state === 'in-use') {
+          out.putBackLater = true;
+          log('Geoplanetical started again before the frozen game\'s own files could be put back: they are put back once it closes, when the loader next checks the frozen game.');
+        }
+        if (back.refused.length) out.damaged = back.refused;
+      } catch (e) {
+        out.putBackLater = true;
+        log(`could not put the frozen game's own files back (${errorCode(e)}): they are put back when the loader next checks the frozen game.`);
+      }
+      written = null; // (once)
+      return out;
+    },
+  };
+}
+
+// What finish() leaves for the player to know, as sentences to add to the session's end message.
+const afterCopy = a => (a?.putBackLater ? ' The frozen game\'s own files could not be put back yet: the loader does it the next time it opens.' : '') +
+  (a?.damaged ? ` The frozen game's own ${a.damaged.join(', ')} could not be put back: the copy the loader kept of it is damaged. Get the frozen game again before you play it.` : '');
+
+// Until the program has exited (by its process id; when Windows gave none: until the game has run and closed) and no
+// Geoplanetical process runs, a few looks in a row.
+async function untilProgramDone({ pid, inUse, alive, everyMs = 2000, misses = 3 }) {
+  let seen = false, exited = false, gone = 0;
+  for (;;) {
+    let running = true;
+    try { running = inUse(); } catch { /* cannot tell: wait */ }
+    if (running) seen = true;
+    // (latched: once it has exited, a new process that is given the same id later does not bring it back)
+    exited ||= pid ? !alive(pid) : false;
+    const programGone = pid ? exited : seen;
+    gone = !running && programGone ? gone + 1 : 0;
+    if (gone >= misses) return;
+    await new Promise(r => setTimeout(r, everyMs));
+  }
+}
+
+// A program (docs/authoring.md#programs) handed the frozen game with mods that change code outside the game window:
+// those are written into the copy before it starts (`start()`: startProgram's call, given the written names), and put
+// back once the program has exited and no Geoplanetical process runs (without a process id: once the game has run and
+// closed). The program starts the game and serves the rest of the mods itself. Resolves { error } when the program
+// could not be started or nothing could be written (the copy is the game's own again), else at the end
+// { problem, message }. onStarted(started) once it runs; onProblem(report) as soon as a written bundle fails.
+export async function programSession({ name, frozen, disk, log, start, onStarted = () => {}, onProblem = () => {}, inUse = gameRunning, alive = pidAlive, everyMs = 2000 }) {
+  let problem = false;
+  const copy = copySession({
+    frozen, disk, log, inUse, everyMs,
+    noted: r => {
+      if (r.detail) log(`${r.bundle}: ${r.detail}`);
+      if (r.status === 'patched') return log(`mods active (${r.bundle})`);
+      problem = true;
+      try { onProblem(r); } catch { /* the front end's display only */ }
+      return log(`THE MODS FAILED in ${r.bundle}: the game will not work this session. Close the game and report this, with launcher.log.`);
+    },
+  });
+  const refused = copy.start();
+  if (refused) return { error: refused };
+  let started;
+  try { started = await start(); } catch (e) { started = { error: e.message }; }
+  if (started.error) {
+    await copy.finish();
+    return { error: started.error };
+  }
+  onStarted(started);
+  await untilProgramDone({ pid: started.pid, inUse, alive, everyMs });
+  const after = await copy.finish();
+  problem ||= after.changed;
+  return {
+    problem,
+    message: (problem
+      ? `${name} and the game have closed, but something went wrong (see the log). Saves from that session may be unmodded.`
+      : after.idle
+        ? `${name} has closed. The mods that change the simulation never started: no game was started or loaded, or the loader could not see them start (see the log).`
+        : `${name} and the game have closed. The mods that change the simulation were active.`) + afterCopy(after),
+  };
+}
+
 // Starts the game through Steam (or `frozen`, { dir, dataDir, notes }: the frozen copy, after prepareFrozen) and serves
 // it until it closes. Resolves { problem, warning, message } at the end of the
 // session; onSwap({ bundle, status }) also reports each worker swap and the page scripts (bundle PAGE) as they happen.
@@ -425,63 +592,21 @@ export async function playSession({ steam, frozen = null, port, payloads, disk =
     else log(`THE MODS ARE NOT ACTIVE in ${bundle} (${status}): this session plays the unmodded game. Close the game and report this, with launcher.log.`);
   };
   // The bundles the game runs outside its window: written into the copy now, the last step before the start.
-  let written = null, judge = null, watch = null, nonce = null, putBackLater = false, idle = false, damaged = null;
-  const notesNow = () => readNotes(frozen.notes, nonce, disk.keys());
-  const noted = r => { if (r.detail) log(`${r.bundle}: ${r.detail}`); onSwap(r); };
-  if (disk.size) {
-    nonce = newNonce();
-    const texts = new Map([...disk].map(([bundle, text]) => [bundle, noteWrap(text, { file: frozen.notes, nonce, bundle })]));
-    // The game may have been started (by the player or a program) while the mods were built or the saves copied: then
-    // one of its processes could load a file being changed. Looked at once more right before the write.
-    let running;
-    try { running = inUse(); } catch { running = true; }
-    if (running) {
-      log('Geoplanetical is running: the mods were not written into the frozen game; nothing was started');
-      return { problem: true, warning: false, message: 'Geoplanetical is running. Close it, then press Play again. Nothing was started.' };
-    }
-    try {
-      rmSync(frozen.notes, { force: true });
-      written = writeBundles(frozen.dir, texts, { inUse });
-    } catch (e) {
-      log(`could not write the mods into the frozen game: ${errorCode(e)}${e.code ? '' : ` (${e.message})`}`);
-      return { problem: true, warning: false, message: `The mods could not be written into the frozen game (${errorCode(e)}). Nothing was started; try again.` };
-    }
-    log(`written into the frozen game for this session: ${[...written.keys()].join(', ')}`);
-    judge = noteJudge(disk.keys());
-    watch = setInterval(() => { for (const r of judge.poll(notesNow())) noted(r); }, 1000);
+  const copy = disk.size ? copySession({ frozen, disk, log, inUse, noted: r => { if (r.detail) log(`${r.bundle}: ${r.detail}`); onSwap(r); } }) : null;
+  if (copy) {
+    const refused = copy.start();
+    if (refused) return { problem: true, warning: false, message: refused };
   }
   await new Promise(resolve => {
     launchAndServe({ steam, frozen, port, payloads, scripts, log, onSwap, onExit: code => { if (code) problem = true; resolve(); } })
       .then(() => log('attached to the game; waiting for the mods to start inside it'), e => {
         log(`could not start the game with the mods: ${e.message}. If the game still opens, ` +
-          `${written ? 'only the mods written into the frozen game are active' : 'it is running WITHOUT the mods'}: close it.`);
+          `${copy ? 'only the mods written into the frozen game are active' : 'it is running WITHOUT the mods'}: close it.`);
         problem = true; resolve();
       });
   });
-  if (written) {
-    await untilClosed(log, inUse);
-    clearInterval(watch);
-    const counts = notesNow();
-    for (const r of judge.poll(counts)) noted(r);
-    for (const r of judge.end(counts)) {
-      if (r.status === 'broken' && !r.reported) noted({ bundle: r.bundle, status: 'broken', detail: r.detail });
-      if (r.status === 'idle') log(`${r.bundle}: did not start this session (the game closed before it needed it, or the loader saw no note from it)`);
-    }
-    idle = judge.end(counts).every(r => r.status === 'idle');
-    try {
-      const back = restoreBundles(frozen.dir, written, { inUse, log });
-      if (back.changed.length) {
-        problem = true;
-        log(`the frozen game's ${back.changed.join(', ')} changed while the game ran (not by the loader): the mods in it may not have been active.`);
-      }
-      if (back.state === 'in-use') putBackLater = true;
-      if (back.refused.length) damaged = back.refused;
-      if (back.state === 'in-use') log('Geoplanetical started again before the frozen game\'s own files could be put back: they are put back once it closes, when the loader next checks the frozen game.');
-    } catch (e) {
-      putBackLater = true;
-      log(`could not put the frozen game's own files back (${errorCode(e)}): they are put back when the loader next checks the frozen game.`);
-    }
-  }
+  const after = copy ? await copy.finish() : null;
+  if (after?.changed) problem = true;
   if (payloads.has(PAGE_BUNDLE) && !confirmed.has(PAGE_BUNDLE)) {
     wordingMissing = true;
     if (!wordingBroken) log('the wording changes were never confirmed active: the game most likely showed its own text.');
@@ -496,8 +621,7 @@ export async function playSession({ steam, frozen = null, port, payloads, disk =
     log('the page scripts were never confirmed running: what those mods show on screen was most likely missing.');
   }
   const warning = pageFailed || pageMissing || wordingMissing;
-  const later = (putBackLater ? ' The frozen game\'s own files could not be put back yet: the loader does it the next time it opens.' : '') +
-    (damaged ? ` The frozen game's own ${damaged.join(', ')} could not be put back: the copy the loader kept of it is damaged. Get the frozen game again before you play it.` : '');
+  const later = afterCopy(after), idle = !!after?.idle;
   return {
     problem,
     warning,

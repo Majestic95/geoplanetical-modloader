@@ -197,13 +197,14 @@ is listed here.
 **How the loader starts it.** As
 
 ```
-<program>.exe --loader "<the loader's folder>" [--game "<the frozen game's folder>"]
+<program>.exe --loader "<the loader's folder>" [--game "<the frozen game's folder>" [--written <bundle>,<bundle>...]]
 ```
 
 with the program's own folder as the working folder, through Windows' ShellExecute (as Explorer starts a program): a
 console program gets a console window of its own. (Windows shows no warning for a downloaded program started this
-way; the loader asks the player itself, below.) The loader passes no other argument, and starts nothing else: it does
-not build the mods or start the game for a program. Your program starts the game itself:
+way; the loader asks the player itself, below.) The loader passes no other argument. It does not start the game for a
+program, and it builds only what the game runs outside its window (`--written`, below). Your program starts the game
+itself:
 
 - Without `--game`, the player chose the live Steam game: start it through Steam (`steam -applaunch 940230`).
 - With `--game`, the player chose the loader's frozen game: a folder holding one build of the game, outside the
@@ -213,10 +214,26 @@ not build the mods or start the game for a program. Your program starts the game
   and refuse a folder that is not a build you support. Start its `Geoplanetical.exe` directly, with Steam running
   and `SteamAppId` and `SteamGameId` set to `940230` in its environment (the game then does not hand itself back to
   Steam), and a `--user-data-dir` of your own (the game keeps its saves and settings there; the loader's own data
-  folder for the frozen game is not yours to use). Never write into the folder. (From game 1.0.9 on, the loader
-  itself changes the simulation by writing into the folder for a session, as
-  [mod-format.md](mod-format.md#where-the-code-runs) describes, and the folder it hands you holds the game's own files.
-  Whether and how a program may do the same is not settled yet.)
+  folder for the frozen game is not yours to use). Never write into the folder.
+- With `--written`, from game 1.0.9 on: a mod switched on changes code the game runs outside its window
+  ([where the code runs](mod-format.md#where-the-code-runs)), and the loader has written those bundles (comma-separated
+  file names in `resources\app.asar.unpacked\renderer`) into the folder for your session, built from the mods switched
+  on, the same way it does for its own Play. The game's own file is beside each, as `<bundle>.gpml-original`. So:
+  - check the folder with each `<bundle>.gpml-original` standing in for `<bundle>` (its size and SHA-256 against the
+    archive index's record of `renderer/<bundle>`), and leave the written files and the originals as they are;
+  - do not build or serve those bundles yourself; serve the rest of the mods (in the game's window) as before;
+  - start the game while your program runs: the loader puts the game's own files back once your program has exited and
+    no Geoplanetical process runs, and only then. The loader's window stays in a session meanwhile. (If Windows does
+    not give the loader your program's process id, it puts them back once the game has run and closed: start the game
+    once per hand-off.)
+  - A program that does not know `--written` should refuse to start (an unknown option), never play without them.
+  - Treat each name as input to check: it must look like `<letters, digits and ->.bundle.js` and be an entry the
+    archive index marks unpacked. Refuse when a listed `<bundle>.gpml-original` is missing or does not match the index:
+    `--written` is never a reason to skip a check. Check again right before you start the game.
+  - Start the game from the program itself, not from a helper that outlives it, and never with administrator rights
+    (the written code would then run with them).
+  - The loader follows the process it started: a program that is only a small starter for another, and exits at once,
+    gets the files put back as soon as it and the game are gone, before the other process starts the game.
 
 **What the loader's folder holds.**
 - `mods\`: one folder per mod, in the [mod format](mod-format.md). Read the mods as the loader does: the same checks,
@@ -224,15 +241,18 @@ not build the mods or start the game for a program. Your program starts the game
   (a newer format, or a feature such as page scripts that your program does not support) should stop the start with
   a message naming it, not be skipped.
 - `launcher-settings.json`: the player's switches. A mod is off only when `enabled[<mod id>]` is `false`; a missing
-  or unreadable file switches nothing off. Read it; never write it.
+  or unreadable file switches nothing off. Read it; never write it. Its `trusted` field (`{ <mod id>: <version and hash> }`) is
+  the loader's record of the mods (each version and its patches) the player confirmed playing with the same access to the PC as any
+  program; an installer must not write or clear it either.
 
 **When the loader refuses.** Before it starts a program, the loader checks what it checks before its own Play: that
 the game was found and is not being updated by Steam (for the frozen game: that it is set up, matches its build and
 Steam is running), that Geoplanetical is not already running, that the mods
-switched on can load together (no required mod off or missing), that none of them changes code the game runs outside
-its window (from game 1.0.9 on; for now only the loader's own Play applies those), and that the switches the window shows are the ones
+switched on can load together (no required mod off or missing), that a mod changing code the game runs outside its
+window plays only with the frozen game and was confirmed by the player (as for Play), and that the switches the window shows are the ones
 saved in `launcher-settings.json`. A program may start with no mod switched on. Until your program exits, or for at
-most a minute after it started, the loader starts neither the game nor another program and does not change the
+most a minute after it started (with `--written`: until your program and the game have closed and the files are put
+back), the loader starts neither the game nor another program and does not change the
 switches or the `mods` folder, so the two never start the game at once and your program reads what the player saw.
 
 **Adding your program from its installer.** An installer may add an entry to the `programs` list in

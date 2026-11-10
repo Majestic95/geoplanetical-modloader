@@ -18,6 +18,7 @@ import {
   VERSION, PRODUCT, MODS, LOG, BASE, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
   MAX_PROGRAMS, sameExe, isConfirmed, downloaded, programName, programProblem, programRefusal, handOffRefusal, startProgram, programArgs,
   playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY, outsideMods,
+  untrusted, trustKey, confirmTrusted, programSession,
 } from './core.mjs';
 import { repairPlaces, frozenStatus, copyIn, steamDownload, isAbort } from './freeze.mjs';
 import { installMods, itemsFromPage, readChosen } from './install.mjs';
@@ -137,7 +138,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       modsFolder: MODS,
       mods: mods.map(m => ({
         id: m.id, name: m.name, version: m.version, author: m.author || null, requires: m.requires || [],
-        builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length, wording: m.patches.some(p => p.bundle === PAGE_BUNDLE), outside: outside.has(m.id),
+        builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length, wording: m.patches.some(p => p.bundle === PAGE_BUNDLE), outside: outside.has(m.id), trusted: !untrusted(settings, [m]).length, trustKey: trustKey(m),
         fits: !!game && m.builds.includes(game.build), enabled: isEnabled(settings, m),
       })),
       broken: broken.map(b => ({ folder: b.folder, error: b.error })),
@@ -192,7 +193,13 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     return null;
   };
 
-  const start = () => {
+  // Mods that change code outside the game window are played only once the player has confirmed them, and again when
+  // their code changes (launcher/core.mjs untrusted): `given`, the window's answer; recorded here. Returns the refusal,
+  // or null.
+  // (the program list is read again first, as before any save, so an entry an installer added meanwhile is kept)
+  const confirmTrust = (list, given) => confirmTrusted(settings, list, given, { save: () => { freshPrograms(); save(); }, log });
+
+  const start = (body = {}) => {
     if (phase !== 'ready') return 'The loader is busy.';
     const busy = programBusy();
     if (busy) return busy;
@@ -204,6 +211,10 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     const { chosen, error } = chooseMods(mods, settings, game, broken);
     if (error) return error;
     if (!chosen.length) return noModsMessage(mods, settings, game);
+    if (game.frozen && !dryRun) {
+      const refused = confirmTrust(outsideMods(chosen, game), body.trust);
+      if (refused) return refused;
+    }
     const blocker = launchBlocker(settings, game);
     if (blocker) return blocker;
     // A failed check must not let a second copy start: the game's state is then unknown, so refuse.
@@ -302,9 +313,11 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
 
   const quit = () => {
     if (phase === 'building') return 'Wait until the mods are built: the game is about to start.';
+    if (starting) return 'Wait until the program has started.';
     if (phase === 'playing') {
       log('quit while the game was running: parts of the game that restart now run WITHOUT the mods served through its window.' +
-        (wroteCopy ? ' The mods written into the frozen game stay until it closes; the loader puts its own files back the next time it opens.' : ''));
+        (wroteCopy ? ' The mods written into the frozen game stay until it closes; the loader puts its own files back the next time it opens ' +
+          '(even if a program is still waiting to start the game: start it again from the loader then).' : ''));
     }
     if (task) { task.abort.abort(); log('quit while the frozen game was being set up: it was not changed (the partial copy is removed next time)'); }
     log('launcher closed');
@@ -449,7 +462,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         const e = add(() => readChosen(file), file);
         return e ? reply(e) : done(true);
       }
-      case 'POST /api/start': return reply(start());
+      case 'POST /api/start': return reply(start(body));
       case 'POST /api/program-add': {
         if (phase !== 'ready') return reply('Programs can be added when no game session is running.');
         if (browsing) return reply('A dialog is already open.');
@@ -498,23 +511,60 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         if (!isConfirmed(p)) { p.confirmed = p.exe; save(); }
         const name = programName(p);
         // The frozen game: the program is given the copy's folder (--game) after the same check as Play (it checks
-        // the folder again itself, and keeps its own saves for it).
+        // the folder again itself, and keeps its own saves for it). Mods that change code outside the game window are
+        // confirmed by the player first, then written into the copy for the program's session (core.mjs
+        // programSession, --written), and this window follows that session until the copy is put back.
         const game = current();
-        let gameDir = null;
+        const outside = game.frozen ? outsideMods(chooseMods(mods, settings, game, broken).chosen ?? [], game) : [];
+        if (outside.length) {
+          const refused = confirmTrust(outside, body.trust);
+          if (refused) return reply(refused);
+        }
+        let gameDir = null, built = null, session = null;
         starting = true;
         let started;
         try {
+          if (outside.length) {
+            built = buildMods(game, chooseMods(mods, settings, game, broken).chosen, log);
+            lastSeen = Date.now(); // the build blocks; polls queued meanwhile are read only after the next timer check
+            if (built.error) return reply(built.error);
+          }
           if (game.frozen) {
             const ready = await prepareFrozen(game, log, { saves: false });
             if (ready.error) { checkFrozen(); return reply(ready.error); }
             gameDir = ready.dir;
           }
-          started = await startProgram(p.exe, BASE, { gameDir });
+          if (built?.disk.size) {
+            problem = false; warning = false; // (before the session: onProblem may report as soon as the program runs)
+            const written = [...built.disk.keys()];
+            let running;
+            const runs = new Promise(r => { running = r; });
+            session = programSession({
+              name, frozen: { dir: gameDir, dataDir: game.dataDir, notes: game.notes }, disk: built.disk, log,
+              start: () => startProgram(p.exe, BASE, { gameDir, written }), onStarted: running,
+              onProblem: () => { problem = true; }, // (shown at once, as for Play)
+            });
+            // Either it runs (the session goes on) or the session ended first: nothing written, or the start failed.
+            const first = await Promise.race([runs.then(s => ({ started: s })), session.then(end => ({ end }))]);
+            started = first.started ?? { error: first.end.error ?? 'it ended at once' };
+          } else started = await startProgram(p.exe, BASE, { gameDir });
         } finally { starting = false; }
         lastSeen = Date.now();
         if (started.error) {
           log(`could not start ${name} (${p.exe}): ${started.error}`);
+          if (session) checkFrozen();
           return reply(`${name} could not be started: ${started.error}`);
+        }
+        if (session) {
+          phase = 'playing'; wroteCopy = true;
+          message = `${name} plays the frozen game. The mods that change the simulation stay written into it until ${name} and the game have closed.`;
+          handedOff = { at: Date.now(), name, pid: started.pid };
+          log(`started ${name} (${p.exe} ${programArgs(BASE, gameDir, [...built.disk.keys()])}); it starts the frozen game itself, with the mods switched on here`);
+          session.then(end => { problem = end.problem; message = end.message; }, e => {
+            log(`error: ${e?.stack || e}`);
+            problem = true; message = 'Something went wrong (see the log). The frozen game\'s own files are put back the next time the loader opens.';
+          }).finally(() => { phase = 'ended'; checkFrozen(); });
+          return reply();
         }
         handedOff = { at: Date.now(), name, pid: started.pid };
         log(`started ${name} (${p.exe} ${programArgs(BASE, gameDir)}); it starts the ${gameDir ? 'frozen ' : ''}game itself, with the mods switched on here`);
@@ -550,7 +600,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   // launcher keeps serving the game and ends when the session ends.
   setInterval(() => {
     if (Date.now() - lastSeen < goneMs) return;
-    if (phase === 'playing' || phase === 'building') return;
+    if (phase === 'playing' || phase === 'building' || starting) return; // (starting: a program, maybe with files written for it)
     // A copy being made finishes first; waiting for Steam's download ends with the window (nobody would see it end).
     if (task && ['starting', 'waiting', 'downloading'].includes(task.step) && task.kind === 'download with Steam') {
       if (!task.abort.signal.aborted) { log('window closed while waiting for Steam\'s download: stopped waiting'); task.abort.abort(); }

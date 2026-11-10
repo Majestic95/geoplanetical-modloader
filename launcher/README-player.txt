@@ -68,7 +68,11 @@ play, and the loader puts the game's own file back when the game closes (or, if 
 stopped first, the next time the loader opens). So:
 - Such a mod plays only in the frozen game, never in your Steam game. The window says so beside the mod.
 - Its code runs inside the game with the same access to your PC as any program you install. Use only
-  mods from authors you trust.
+  mods from authors you trust. The first time you play such a mod, and again whenever its version or its
+  code changes, the loader asks you to confirm it.
+- A program you start from the loader (below) gets such mods written into the frozen game the same way;
+  the loader keeps its window open in a session until the program and the game have closed, then puts
+  the game's own file back.
 
 
 PLAYING THROUGH ANOTHER PROGRAM (FOR EXAMPLE MULTIPLAYER)

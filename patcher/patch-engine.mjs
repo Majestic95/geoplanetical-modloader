@@ -35,6 +35,25 @@ function exactlyOnce(text, needle, what) {
   return at[0];
 }
 
+// Node access. From game 1.0.9 on, the simulation and its helper workers run in a Node process, where these reach the
+// player's PC (files, other programs). No edit may add one, whatever determinismOk says: mods change the game's logic.
+// A check against mistakes, not a sandbox (code can reach the same things in disguise; docs/mod-format.md).
+// Only the names themselves: a property of the same name (the game's own `l.exports[n]`, `this.require(...)`) is not one,
+// but a spread (`...process`) and the global object's own (`globalThis.process`) are. Optional calls (`?.(`, `?.x`) and
+// tagged templates count too.
+const NAME = '(?<![\\w$])(?<![^.]\\.)';
+const NODE_ACCESS = [
+  [new RegExp(`${NAME}require\\s*(?:\\?\\.)?[(\`]`), 'require('],
+  [new RegExp(`${NAME}process\\s*(?:\\?\\.|[.[])`), 'process'],
+  [new RegExp(`${NAME}import\\s*\\(`), 'import('],
+  [new RegExp(`${NAME}eval\\s*(?:\\?\\.)?[(\`]`), 'eval('],
+  [new RegExp(`${NAME}Function\\s*(?:\\?\\.)?[(\`]`), 'the Function constructor'],
+  [new RegExp(`${NAME}(?:module|exports)\\s*(?:\\?\\.|[.[])`), 'module or exports'],
+  [new RegExp(`${NAME}__(?:dirname|filename)\\b`), '__dirname or __filename'],
+  [/(?<![\w$])(?:globalThis|global|self|window)\s*(?:\?\.|\.)\s*(?:process|require|module|exports)\b/, 'a Node name through the global object'],
+  [/\.\.\.\s*(?:process|require|module|exports)\b/, 'a spread of a Node name'],
+];
+
 export function hazardsIn(code) {
   return HAZARDS.filter(([re]) => re.test(code)).map(([, label]) => label);
 }
@@ -44,12 +63,16 @@ const countOf = (re, text) => (text.match(new RegExp(re.source, 'g')) || []).len
 
 // Hazards an edit introduces, counted in a window around the edit before and after it, so an edit that assembles a
 // forbidden call from surrounding text (`max` -> `random` inside `Math.max(`) is caught as well as one it contains.
-export function hazardsIntroduced(before, after, at, findLength, replaceLength) {
+export function hazardsIntroduced(before, after, at, findLength, replaceLength, list = HAZARDS) {
   const lo = Math.max(0, at - HAZARD_WINDOW);
   const old = before.slice(lo, at + findLength + HAZARD_WINDOW);
   const neu = after.slice(lo, at + replaceLength + HAZARD_WINDOW);
-  return HAZARDS.filter(([re]) => countOf(re, neu) > countOf(re, old)).map(([, label]) => label);
+  return list.filter(([re]) => countOf(re, neu) > countOf(re, old)).map(([, label]) => label);
 }
+
+// The Node access an edit introduces, counted the same way.
+export const nodeAccessIntroduced = (before, after, at, findLength, replaceLength) =>
+  hazardsIntroduced(before, after, at, findLength, replaceLength, NODE_ACCESS);
 
 function applyEdit(text, e, what) {
   if (typeof e.replace !== 'string') throw new Error(`${what}: replace must be a string`);
@@ -150,6 +173,13 @@ export function buildBundle(original, mods, { build, bundle }) {
         if (hazards.length && !e.determinismOk) {
           throw new Error(`${what}: the edit introduces ${hazards.join(', ')}; the simulation must stay deterministic ` +
             '(set determinismOk with the reason if it provably never feeds simulation state)');
+        }
+        // (not in the page bundle: it runs in the game's window, without Node, and its edits are text, where "process."
+        // can end a sentence)
+        const access = bundle === PAGE_BUNDLE ? [] : nodeAccessIntroduced(text, r.text, r.offset, e.find.length, e.replace.length);
+        if (access.length) {
+          throw new Error(`${what}: the edit adds ${access.join(', ')}, which can reach the player's PC where the game runs ` +
+            'this code in a Node process (from game 1.0.9 on); a mod may change only the game\'s own logic');
         }
         text = r.text;
         report.push({ mod: mod.id, patch: p.id, edit: k, offset: r.offset, delta: e.replace.length - e.find.length, ...(entry ? { entry } : {}) });

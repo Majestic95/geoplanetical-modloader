@@ -34,7 +34,22 @@ expect('postlude records the handler', () => {
   const r = buildBundle('globalThis.onmessage=function h(){};throw "err:a"', [mod('m', [{ find: 'h(){}', replace: 'h(){return 1}', anchor: 'err:a' }])], opts);
   const g = {}; const run = new Function('globalThis', r.text.replace('throw "err:a"', '0')); run(g); return g;
 }, { check: g => typeof g[HANDLER_MARKER] === 'function' && g[HANDLER_MARKER] === g.onmessage && HANDLER_MARKER === '__gpModLoaderOnmessage' });
-expect('hazard allowed with determinismOk', () => buildBundle(T, [mod('m', [{ find: 'a(){x(1)}', replace: 'a(){x(Date.now())}', anchor: 'err:a', determinismOk: 'test only' }])], opts), { check: r => r.text.includes('Date.now()') });
+// Node access (game 1.0.9 on runs the simulation in a Node process): refused whatever determinismOk says.
+for (const [label, code] of [['require(', 'require("fs")'], ['process', 'process.env.X'], ['process', 'process["env"]'], ['import(', 'import("x")'],
+  ['eval(', 'eval("1")'], ['the Function constructor', 'new Function("return 1")'], ['module or exports', 'module.exports'], ['__dirname or __filename', '__dirname']]) {
+  expect(`node access refused: ${code}`, () => buildBundle(T, [mod('m', [{ find: 'a(){x(1)}', replace: `a(){x(${code})}`, anchor: 'err:a', determinismOk: 'not a way out' }])], opts),
+    { throws: new RegExp(`adds ${label.replace(/[(.[]/g, '\\$&')}.*reach the player's PC`) });
+}
+for (const code of ['process?.env', 'require?.("fs")', 'Function`return 1`', 'module?.x', 'globalThis.process.env', 'self.require("fs")', '{...process}', '[...process.argv]']) {
+  expect(`node access refused: ${code}`, () => buildBundle(T, [mod('m', [{ find: 'a(){x(1)}', replace: `a(){x(${code})}`, anchor: 'err:a' }])], opts), { throws: /reach the player's PC/ });
+}
+expect('node access: properties of the same name are the game\'s own (l.exports[n], this.require, o.process.x)',
+  () => buildBundle(T, [mod('m', [{ find: 'a(){x(1)}', replace: 'a(){x(l.exports[n]+o.exports.push(r)+this.require(5)+o.process.x+q.eval(1))}', anchor: 'err:a' }])], opts),
+  { check: r => r.text.includes('l.exports[n]') });
+expect('node access: existing nearby code is not blamed on the edit; look-alike names pass',
+  () => buildBundle('function a(){return isFunction(processes)+require(1)};throw "err:a"', [mod('m', [{ find: '(1)}', replace: '(2)}', anchor: 'err:a' }])], opts),
+  { check: r => r.text.includes('require(2)}') });
+expect('hazard allowed with determinismOk',() => buildBundle(T, [mod('m', [{ find: 'a(){x(1)}', replace: 'a(){x(Date.now())}', anchor: 'err:a', determinismOk: 'test only' }])], opts), { check: r => r.text.includes('Date.now()') });
 expect('conflict names the earlier mod', () => buildBundle(T, [
   mod('first', [{ find: 'a(){x(1)}', replace: 'a(){x(5)}', anchor: 'err:a' }]),
   mod('second', [{ find: 'a(){x(1)}', replace: 'a(){x(6)}', anchor: 'err:a' }])], opts),

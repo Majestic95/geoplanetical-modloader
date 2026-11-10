@@ -36,8 +36,9 @@ The included `README.txt` covers saves, updates and what to do when something go
 - **Mods that change the simulation run with the game's access to your PC.** From game 1.0.9 on, the game runs its
   simulation in a background process of its own. The loader changes it by writing the modded code into its own
   copy of the game while you play, and puts the original back when the game closes. That code runs with the same
-  access to your PC as any program you install, so use only mods from authors you trust. Such mods play only in the
-  frozen game, never in your Steam game.
+  access to your PC as any program you install, so use only mods from authors you trust: the loader asks you before
+  such a mod first plays, and again whenever its version or its code changes. Such mods play only in the frozen game, never in your Steam game; a
+  program you start from the loader gets them written into the frozen game the same way.
 - **Game updates:** a Steam update does not stop the mods: the frozen game stays on its version. Each mod states the
   game builds it was made for; when a loader release moves to a newer game version, the mods follow, and the loader
   replaces its copy once you get the new one.

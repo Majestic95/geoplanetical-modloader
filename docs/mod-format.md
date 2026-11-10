@@ -295,7 +295,12 @@ The format is the same for every bundle; where the patched code runs depends on 
     with a message saying so;
   - the code runs with Node's access to the player's PC (`require`, files, other programs), like any program. The loader
     tells players so beside the mod. Keep your edits to the game's logic and numbers: no `require`, `process`, `import(`,
-    file or network access. The loader does not check this ([its determinism check](#determinism) is not a sandbox);
+    file or network access. The loader refuses an edit (to any bundle but `app.bundle.js`) that adds `require(`,
+    `process.` or `process[`, `import(`, `eval(`, `Function(`, `module.`, `module[`, `exports.` or `exports[`, `__dirname` or `__filename` near
+    it (also as `?.` calls, tagged templates, spreads such as `...process`, or through `globalThis.`/`global.`/`self.`/`window.`; a property
+    of the same name, such as the game's own `l.exports[n]`, is not one), whatever `determinismOk` says. That is a check against mistakes, not a sandbox: code can reach the same things
+    in disguise. The player confirms such a mod before it first plays, and again whenever its version or its patches
+    change;
   - the patched text is built exactly as for the window (the same edits, the same marker); the loader adds one short
     line before and after it that appends a note to its own folder when Node loads the file. A bundle that left no note
     did not start in that session (the save codec, for example, starts with the first save). One that started but never

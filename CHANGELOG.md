@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (not released yet)
 
 - **The frozen game moves to game 1.1.0 (build `26519199`).** It replaces 1.0.8 (`26403824`): the window shows the
   copy as an older version until the new one is in place, by the same three ways as before (copy from the Steam game
@@ -17,6 +17,19 @@
   to the PC as any program. Short notes the written code leaves as Node loads it confirm it in the log (`mods active
   (...)`); a bundle that never started is no longer reported as "most likely ran the UNMODDED game". No format change:
   the patched text is built byte for byte as before. `patcher/launch.mjs` refuses such mods and points to the loader.
+- **The player confirms such mods once.** Before a mod that changes code the game runs outside its window first plays
+  (Play, or a program started from the loader), the window asks the player to confirm it, and again whenever its version
+  or its patches change (`trusted` in `launcher-settings.json`: the mod id, its version and a hash of its patches); the
+  text menu asks the same.
+- **Edits may not add Node access.** The loader refuses an edit (to any bundle but `app.bundle.js`) that adds
+  `require(`, `process.` or `process[`, `import(`, `eval(`, `Function(`, `module.`, `module[`, `exports.` or `exports[`,
+  `__dirname` or `__filename` near it (also as `?.` calls, tagged templates, spreads, or through `globalThis.` and the
+  like; a property of the same name, such as the game's own `l.exports[n]`, is not one), whatever `determinismOk` says: a check against mistakes, not a sandbox. Mods that pass it build byte for byte as
+  before.
+- **Programs get such mods too.** When the player starts a program (such as a multiplayer launcher) with the frozen
+  game and such a mod switched on, the loader writes those bundles into the frozen game first, passes their names with
+  `--written`, and keeps its window in a session until the program has exited and the game has closed, then puts the
+  game's own files back ([docs/authoring.md](docs/authoring.md#programs)). With the Steam game it refuses, as for Play.
 - The loader reads a game file kept beside the archive only when it matches the size and SHA-256 the archive records
   for it.
 - **Author tools: `tools/asar_extract.py` copies unpacked files.** Since game 1.0.9 the worker bundles (including

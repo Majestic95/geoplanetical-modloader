@@ -378,11 +378,26 @@ export default String.raw`<!doctype html>
   // A program the player did not choose in this window (an entry another program or a person wrote into
   // launcher-settings.json) is started only after its full path is shown and confirmed, once.
   function startProgram(p) {
-    if (p.confirmed) return api('POST', 'program-start', { exe: p.exe });
-    ask('Start this program?', p.exe, 'It was added to the settings of the loader from outside this window, not chosen here. ' +
-      'Start it only if you installed it yourself and trust it.', 'Start it', function () {
-      api('POST', 'program-start', { exe: p.exe, confirmed: true });
+    trustThen(function (trust) {
+      if (p.confirmed) return api('POST', 'program-start', { exe: p.exe, trust: trust });
+      ask('Start this program?', p.exe, 'It was added to the settings of the loader from outside this window, not chosen here. ' +
+        'Start it only if you installed it yourself and trust it.', 'Start it', function () {
+        api('POST', 'program-start', { exe: p.exe, confirmed: true, trust: trust });
+      });
     });
+  }
+  // Mods switched on that run with the same access to the PC as any program (they change code the game runs outside its
+  // window, written into the frozen game) are confirmed before they play (again when their code changes); then(answer) goes on.
+  function trustThen(then) {
+    var asks = st && st.game && st.game.frozen && !st.dryRun ? st.mods.filter(function (m) { return m.fits && m.enabled && m.outside && !m.trusted; }) : [];
+    if (!asks.length) return then(undefined);
+    ask('Play mods that have the same access to your PC as any program?',
+      asks.map(function (m) { return (m.name + ' ' + m.version + ' (' + m.id + ')' + (m.author ? ' by ' + m.author : '')).slice(0, 160); }).join(', '),
+      'They change the simulation, which this game version runs outside the game window. Written into the frozen game while you play, ' +
+      'their code runs with the same access to your PC as any program you install: it could read, change or delete your files. ' +
+      'Play them only if you trust their authors. You are asked again whenever the code of a mod changes.', 'Play them', function () {
+        then(asks.map(function (m) { return m.id + '@' + m.trustKey; }));
+      });
   }
   // A question in the page itself (not the browser confirm(), which would stop the polling meanwhile).
   function ask(text, path, note, yes, then) {
@@ -393,7 +408,7 @@ export default String.raw`<!doctype html>
     if (!d.open) d.showModal();
   }
 
-  $('play').onclick = function () { api('POST', 'start'); };
+  $('play').onclick = function () { trustThen(function (trust) { api('POST', 'start', trust ? { trust: trust } : undefined); }); };
   $('pick-frozen').onclick = function () { api('POST', 'play', { which: 'frozen' }); };
   $('pick-live').onclick = function () { api('POST', 'play', { which: 'live' }); };
   $('freeze-live').onclick = function () { api('POST', 'freeze-live'); };
