@@ -18,6 +18,7 @@ import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
 import { PIN, checkFolder, checkProblem, listFiles, freeBytes, errorCode, within } from '../patcher/frozen.mjs';
 import { APP_ID, gameRunning } from '../patcher/game.mjs';
+import { settleCopy } from '../patcher/copy-bundles.mjs';
 
 // An error whose message is for the player as it is.
 const said = (message, extra = {}) => Object.assign(new Error(message), { said: true, ...extra });
@@ -46,8 +47,9 @@ async function patiently(step) {
 
 // When the loader opens, before anything else: an install cut short between its two renames leaves game.old and no
 // game (renamed back); a copy being made (game.new) is removed: it was never installed; a replaced copy (game.old
-// beside game) is removed.
-export async function repairPlaces(places, log = () => {}) {
+// beside game) is removed; files a session wrote into the copy are put back (patcher/copy-bundles.mjs settleCopy;
+// not while the game runs). `inUse` is for tests.
+export async function repairPlaces(places, log = () => {}, { inUse = gameRunning } = {}) {
   if (!existsSync(places.game) && existsSync(places.old)) {
     await rename(places.old, places.game);
     log('the frozen copy\'s last replacement was interrupted: the previous copy is back in place');
@@ -56,12 +58,24 @@ export async function repairPlaces(places, log = () => {}) {
     if (!existsSync(p)) continue;
     try { await rm(p, { recursive: true, force: true }); } catch (e) { log(`could not remove the frozen game's ${p === places.old ? 'previous copy' : 'unfinished copy'} (${errorCode(e)}); it is removed next time`); }
   }
+  if (!existsSync(places.game)) return;
+  try {
+    if (settleCopy(places.game, { inUse, log }).state === 'in-use') log('the frozen game is running with files a session of the loader changed; they are put back once it closes');
+  } catch (e) { log(`could not put the frozen game's own files back (${errorCode(e)}); tried again next time`); }
 }
 
 // The copy's state: { status: 'ready' } or { status: 'missing' | 'other' | 'broken' | 'unreadable', problem }.
-// 'other': a copy of another build (an earlier pin): the next copy replaces it.
-export async function frozenStatus(places, pin = PIN) {
+// 'other': a copy of another build (an earlier pin): the next copy replaces it. Files a session wrote into the copy are
+// put back first (not while the game runs: then it is 'unreadable', and the player is told to close the game).
+export async function frozenStatus(places, pin = PIN, { inUse = gameRunning } = {}) {
   if (!existsSync(places.game)) return { status: 'missing', problem: 'The frozen game is not set up yet.' };
+  try {
+    if (settleCopy(places.game, { inUse }).state === 'in-use') {
+      return { status: 'unreadable', problem: 'Geoplanetical is running, and the frozen game still holds mods from an earlier session: they are put back once the game closes. Close it, then click Refresh.' };
+    }
+  } catch (e) {
+    return { status: 'unreadable', problem: `The frozen game's own files could not be put back (${errorCode(e)}). Click Refresh to try again.` };
+  }
   const r = await checkFolder(places.game, { pin });
   if (r.ok) return { status: 'ready' };
   if (r.reason === 'build') return { status: 'other', problem: `The frozen game is an older game version; this loader plays build ${pin.build} (game ${pin.version}). Get the new one: it replaces the old copy.` };

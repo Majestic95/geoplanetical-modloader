@@ -14,6 +14,10 @@
 //
 // The copy keeps its own saves and settings (its --user-data-dir): Steam Cloud does not sync them. The first time,
 // the saves of the Steam game are copied into it (copySavesOnce).
+//
+// From game 1.0.9 on, the simulation runs in a Node process of the game's, loaded from files beside the archive
+// (resources\app.asar.unpacked). Mods to those files are written into the copy for one session and the originals put
+// back afterwards (patcher/copy-bundles.mjs); at rest the copy is the pinned build, and that is what is checked here.
 import { spawn, spawnSync } from 'node:child_process';
 import { createReadStream, existsSync, realpathSync, lstatSync } from 'node:fs';
 import { open, readdir, mkdir, copyFile, rename, rm, stat, statfs, constants } from 'node:fs/promises';
@@ -23,25 +27,26 @@ import { APP_ID } from './game.mjs';
 
 // The build this loader release plays. Moving it is a release decision: mods add the new build to `builds`.
 export const PIN = Object.freeze({
-  build: '26403824',
-  version: '1.0.8',
+  build: '26519199',
+  version: '1.1.0',
   depot: '940231',
-  manifest: '6610280059570798071',
+  manifest: '7115452977362333310',
   // resources\app.asar: its size, the SHA-256 of its JSON index (the bytes after the 16-byte header, as long as its
   // offset 12 says), and the SHA-256 of the whole file
-  asarSize: 3762307874,
-  asarIndexSha256: '439c47d55d852a73c307de109a5949cad1c1656719a376e8b1f4a229ba0d8a72',
-  asarSha256: '46ca4183479ae570f9355514cc4d2a1bc53dac270499968fd5ef8a6921f21e57',
-  // every file outside resources\app.asar: their total size, and folderSha256
-  folderBytes: 383340600,
-  folderSha256: '0357cabb1fe130510a7790d638f51f06a1923582b4596113b21173c5dd0ee858',
+  asarSize: 3595466666,
+  asarIndexSha256: '6ae538594f745a6140b5cff9f5946278f2c2e4347d02bc1af67972c3d9a1f46d',
+  asarSha256: '961553dea82db409991cfb299364189966d3e3b080e9e0ca4e392de591b6a215',
+  // every file outside resources\app.asar (111 files, resources\app.asar.unpacked included): their total size, and
+  // folderSha256
+  folderBytes: 495135922,
+  folderSha256: '6d72a2ac39ab1426f538189a892865cc32fce7af1cb4629a380f9007aa1de872',
 });
 
 export const GAME_EXE = 'Geoplanetical.exe';
 const ASAR = join('resources', 'app.asar');
 // (an archive index larger than this is not a game's: refused before the read, as a picked folder could name any size)
 const MAX_INDEX = 64 * 1024 * 1024;
-// (the pinned build has 85 files and a few dozen folders outside the archive; a folder with far more is not a game's)
+// (the pinned build has 111 files and a few dozen folders outside the archive; a folder with far more is not a game's)
 export const MAX_ENTRIES = 5000;
 // Chromium may write a debug.log beside the exe; it is not part of the build.
 const SKIP = new Set(['resources/app.asar', 'debug.log']);
@@ -49,10 +54,14 @@ const SKIP = new Set(['resources/app.asar', 'debug.log']);
 // The loader's own folder for the copy (the window's Edge profile lives there too): null if Windows does not say.
 export const FROZEN_ROOT = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'GeoplaneticalModLauncher') : null;
 // game: the copy; data: its user-data-dir (saves in data\saves); staging: a copy being made (never started); old: the
-// copy being replaced (removed right after).
+// copy being replaced (removed right after); notes: where code the loader wrote into the copy says it started
+// (patcher/copy-bundles.mjs).
 export function frozenPlaces(root = FROZEN_ROOT) {
   if (!root) return null;
-  return { root, game: join(root, 'game'), data: join(root, 'game-data'), staging: join(root, 'game.new'), old: join(root, 'game.old') };
+  return {
+    root, game: join(root, 'game'), data: join(root, 'game-data'), staging: join(root, 'game.new'), old: join(root, 'game.old'),
+    notes: join(root, 'session-notes.txt'),
+  };
 }
 // The saves of the Steam game (the game's userData is %APPDATA%\Geoplanetical; saves in its saves folder).
 export const STEAM_SAVES = process.env.APPDATA ? join(process.env.APPDATA, 'Geoplanetical', 'saves') : null;

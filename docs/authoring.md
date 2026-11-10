@@ -114,13 +114,20 @@ Close the game, then start it through the loader with only your mod:
 node <loader>/patcher/launch.mjs --mod my-mod
 ```
 
-This starts the game through Steam, applies the mod in memory and stays attached until the game closes; with
+This starts the game through Steam, applies the mod in memory (a mod that changes code the game runs outside its
+window is refused here: see below) and stays attached until the game closes; with
 `--frozen` it starts the loader's frozen game instead (set it up once in the loader's window; it has its own saves,
 apart from the Steam game's). It prints
 whether each patched part of the game is confirmed to run your code, whether your wording changes are active, and
 whether your page scripts ran (on every page load; an error a script throws is in the game's developer tools console). `--dry-run` does everything except start the
 game, and `--unpatched` starts the game through the same path without mods, for comparison. You can also copy your
 mod folder into the `mods` folder of a packaged loader and use its window.
+
+From game 1.0.9 on, the simulation and its helper workers run outside the game's window
+([where the code runs](mod-format.md#where-the-code-runs)). `launch.mjs` cannot reach them and refuses a mod that
+changes them: play it with the loader and its frozen game instead (`node <loader>/launcher/main.mjs`, or a packaged
+loader). The loader's log then says, for each such bundle, when it was written into the frozen game, when it started
+(`mods active (simulation-worker.bundle.js)`), and that it was put back after the game closed.
 
 Test at least: a new game, a few months of play, save, quit, and load the save again through the loader.
 
@@ -200,12 +207,16 @@ not build the mods or start the game for a program. Your program starts the game
 
 - Without `--game`, the player chose the live Steam game: start it through Steam (`steam -applaunch 940230`).
 - With `--game`, the player chose the loader's frozen game: a folder holding one build of the game, outside the
-  Steam library (loader 0.6.0: build `26403824`). The loader checked it just before (its `resources\app.asar` index
+  Steam library (loaders 0.6.0 and 0.7.0: build `26403824`; the next release: `26519199`). The loader checked it just
+  before (its `resources\app.asar` index
   and every file outside the archive match that build), but check it again yourself before you start anything in it,
   and refuse a folder that is not a build you support. Start its `Geoplanetical.exe` directly, with Steam running
   and `SteamAppId` and `SteamGameId` set to `940230` in its environment (the game then does not hand itself back to
   Steam), and a `--user-data-dir` of your own (the game keeps its saves and settings there; the loader's own data
-  folder for the frozen game is not yours to use). Never write into the folder.
+  folder for the frozen game is not yours to use). Never write into the folder. (From game 1.0.9 on, the loader
+  itself changes the simulation by writing into the folder for a session, as
+  [mod-format.md](mod-format.md#where-the-code-runs) describes, and the folder it hands you holds the game's own files.
+  Whether and how a program may do the same is not settled yet.)
 
 **What the loader's folder holds.**
 - `mods\`: one folder per mod, in the [mod format](mod-format.md). Read the mods as the loader does: the same checks,
@@ -218,7 +229,8 @@ not build the mods or start the game for a program. Your program starts the game
 **When the loader refuses.** Before it starts a program, the loader checks what it checks before its own Play: that
 the game was found and is not being updated by Steam (for the frozen game: that it is set up, matches its build and
 Steam is running), that Geoplanetical is not already running, that the mods
-switched on can load together (no required mod off or missing), and that the switches the window shows are the ones
+switched on can load together (no required mod off or missing), that none of them changes code the game runs outside
+its window (from game 1.0.9 on; for now only the loader's own Play applies those), and that the switches the window shows are the ones
 saved in `launcher-settings.json`. A program may start with no mod switched on. Until your program exits, or for at
 most a minute after it started, the loader starts neither the game nor another program and does not change the
 switches or the `mods` folder, so the two never start the game at once and your program reads what the player saw.

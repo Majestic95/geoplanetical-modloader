@@ -1,7 +1,7 @@
 # Geoplanetical Mod Loader
 
 A mod loader for [Geoplanetical](https://store.steampowered.com/app/940230/). It starts the game with the mods you
-switch on, applying their changes to the game's code in memory. The game's own files are never changed, and
+switch on, applying their changes to the game's code as it starts. Your Steam game's files are never changed, and
 starting the game from Steam as usual plays it without mods.
 
 The game's built-in mod support covers presentation, not the game's rules. This loader lets mods change how the
@@ -33,6 +33,11 @@ The included `README.txt` covers saves, updates and what to do when something go
   others who use the same ones.
 - **Saves:** a save made with mods needs the same mods to load correctly. The frozen game keeps its own saves (your
   Steam saves are copied into it the first time you play it); Steam Cloud does not back them up.
+- **Mods that change the simulation run with the game's access to your PC.** From game 1.0.9 on, the game runs its
+  simulation in a background process of its own. The loader changes it by writing the modded code into its own
+  copy of the game while you play, and puts the original back when the game closes. That code runs with the same
+  access to your PC as any program you install, so use only mods from authors you trust. Such mods play only in the
+  frozen game, never in your Steam game.
 - **Game updates:** a Steam update does not stop the mods: the frozen game stays on its version. Each mod states the
   game builds it was made for; when a loader release moves to a newer game version, the mods follow, and the loader
   replaces its copy once you get the new one.
@@ -54,18 +59,23 @@ and only that.
 
 ## How it works
 
-1. The loader reads the original game code from the game's `resources/app.asar` (read only) and applies the
-   enabled mods' edits to it in memory. Every edit must match exactly once, near its anchor; replacements that
-   would add non-deterministic code (time, randomness, page state, timers) are refused.
-2. It starts the game with Chromium's remote-debugging port on 127.0.0.1 (the frozen game from its folder, after
+1. The loader reads the original game code from the game's `resources/app.asar` and the files it keeps beside it in
+   `app.asar.unpacked` (read only, each checked against the archive's own record of it) and applies the enabled
+   mods' edits to it in memory. Every edit must match exactly once, near its anchor; replacements that would add
+   non-deterministic code (time, randomness, page state, timers) are refused.
+2. Code the game runs outside its window (from game 1.0.9 on, the simulation and its helper workers, which the game
+   loads in a Node process of its own from `app.asar.unpacked`) is written into the frozen game's folder just before
+   the start, with the original kept beside it, and put back once the game has closed (or, after a crash, the next
+   time the loader opens). Short notes the written code leaves as it loads tell the loader it is running.
+3. It starts the game with Chromium's remote-debugging port on 127.0.0.1 (the frozen game from its folder, after
    checking that its archive index and every file outside the archive match the pinned build; the live game through
    Steam), waits for each game
-   worker that a mod changes, and runs the patched code in that worker in place of the original before the
-   original runs.
-3. It checks inside each worker that the patched code is the code serving the game, and stays attached until the
+   worker in the game's window that a mod changes, and runs the patched code in that worker in place of the original
+   before the original runs.
+4. It checks inside each such worker that the patched code is the code serving the game, and stays attached until the
    game closes, so a worker that restarts during play is patched again. If a check fails, the window shows a red
    warning.
-4. The mods' page scripts run in the game's main page, walled off from the game's code (each mod's in an isolated
+5. The mods' page scripts run in the game's main page, walled off from the game's code (each mod's in an isolated
    world with the page's elements only): at the start of every page load, and once in the page already open. If one
    fails, the window shows an amber warning; the game and its simulation are unaffected.
 
@@ -73,7 +83,7 @@ Source layout:
 
 | Folder | Contents |
 |---|---|
-| `patcher/` | Mod loading and validation (`mods.mjs`), the patch engine (`patch-engine.mjs`), game detection (`game.mjs`), the frozen game's pin, check and start (`frozen.mjs`), the launch-and-attach runtime (`runner.mjs`, `session.mjs`, `cdp.mjs`), the author command-line tools `build.mjs` and `launch.mjs`, and tests |
+| `patcher/` | Mod loading and validation (`mods.mjs`), the patch engine (`patch-engine.mjs`), game detection (`game.mjs`), the frozen game's pin, check and start (`frozen.mjs`), writing code the game runs outside its window into the frozen game and putting it back (`copy-bundles.mjs`), the launch-and-attach runtime (`runner.mjs`, `session.mjs`, `cdp.mjs`), the author command-line tools `build.mjs` and `launch.mjs`, and tests |
 | `launcher/` | The player launcher: a window served on 127.0.0.1 (`gui.mjs`, `gui-page.mjs`), adding mods from a zip or folder (`install.mjs`), a text menu (`console.mjs`), shared steps (`core.mjs`), and the packager (`package.mjs`) |
 | `tools/` | Author tools for reading the game's minified code and porting mods to new game builds |
 | `docs/` | Format specification and authoring guide |

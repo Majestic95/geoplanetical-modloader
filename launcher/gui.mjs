@@ -17,7 +17,7 @@ import { PIN, frozenPlaces } from '../patcher/frozen.mjs';
 import {
   VERSION, PRODUCT, MODS, LOG, BASE, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
   MAX_PROGRAMS, sameExe, isConfirmed, downloaded, programName, programProblem, programRefusal, handOffRefusal, startProgram, programArgs,
-  playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY,
+  playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY, outsideMods,
 } from './core.mjs';
 import { repairPlaces, frozenStatus, copyIn, steamDownload, isAbort } from './freeze.mjs';
 import { installMods, itemsFromPage, readChosen } from './install.mjs';
@@ -66,6 +66,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   // or refusal ; notice: what the last action did when it succeeded (a mod added), until the next action
   // problem: the mods may not be active in the game (red); warning: a page script failed, the game runs modded (amber)
   let phase = 'ready', message = null, notice = null, problem = false, warning = false, lastSeen = Date.now(), browsing = false;
+  let wroteCopy = false; // this session wrote mods into the frozen game (launcher/core.mjs playSession)
   let running = { at: 0, value: false };
   // starting: a program is being started ; handedOff: { at, name, pid } of the last program started (core.mjs)
   let starting = false, handedOff = null;
@@ -119,6 +120,9 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
 
   const state = () => {
     const game = current();
+    // (mods that change code the chosen game runs outside its window: the page says what that means for them)
+    let outside = new Set();
+    try { outside = new Set(outsideMods(mods, game).map(m => m.id)); } catch { /* the game's archive cannot be read */ }
     return {
       version: VERSION, dryRun, phase, message, notice, problem, warning,
       steamFound: !!steam,
@@ -133,7 +137,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       modsFolder: MODS,
       mods: mods.map(m => ({
         id: m.id, name: m.name, version: m.version, author: m.author || null, requires: m.requires || [],
-        builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length, wording: m.patches.some(p => p.bundle === PAGE_BUNDLE),
+        builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length, wording: m.patches.some(p => p.bundle === PAGE_BUNDLE), outside: outside.has(m.id),
         fits: !!game && m.builds.includes(game.build), enabled: isEnabled(settings, m),
       })),
       broken: broken.map(b => ({ folder: b.folder, error: b.error })),
@@ -224,7 +228,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
           frozenDir = ready.dir;
         }
         if (dryRun) { log('dry run: everything checks out; the game was not started'); phase = 'ended'; message = 'Dry run: the mods were built and checked. The game was not started.'; return; }
-        phase = 'playing'; message = game.frozen ? 'Starting the frozen game…' : 'Starting the game through Steam…';
+        phase = 'playing'; wroteCopy = built.disk.size > 0; message = game.frozen ? 'Starting the frozen game…' : 'Starting the game through Steam…';
         // A worker that does not take the mods is shown at once (problem), not only when the game closes.
         // Page scripts: a throw stays a warning for the session; "did not run" lasts until a later page load runs them.
         // Wording changes not active: a warning until a later page load has them (broken: a problem, as for a worker).
@@ -239,10 +243,11 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
           warning = pageFailed || pageMissing || wordingMissing;
         };
         const end = await playSession({
-          steam, frozen: frozenDir ? { dir: frozenDir, dataDir: game.dataDir } : null,
+          steam, frozen: frozenDir ? { dir: frozenDir, dataDir: game.dataDir, notes: game.notes } : null, disk: built.disk,
           port, payloads: built.payloads, scripts: built.scripts, chosen, log, onSwap,
         });
         phase = 'ended'; problem = end.problem; warning = end.warning; message = end.message;
+        if (game.frozen) checkFrozen(); // its own files were put back (or not: then it says so)
       } catch (e) {
         log(`error: ${e?.stack || e}`);
         problem = true; message = 'Something went wrong (see the log). If the game opened, it may be running WITHOUT the mods: close it.';
@@ -297,7 +302,10 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
 
   const quit = () => {
     if (phase === 'building') return 'Wait until the mods are built: the game is about to start.';
-    if (phase === 'playing') log('quit while the game was running: parts of the game that restart now run WITHOUT the mods.');
+    if (phase === 'playing') {
+      log('quit while the game was running: parts of the game that restart now run WITHOUT the mods served through its window.' +
+        (wroteCopy ? ' The mods written into the frozen game stay until it closes; the loader puts its own files back the next time it opens.' : ''));
+    }
     if (task) { task.abort.abort(); log('quit while the frozen game was being set up: it was not changed (the partial copy is removed next time)'); }
     log('launcher closed');
     setTimeout(() => process.exit(problem ? 1 : 0), 200);

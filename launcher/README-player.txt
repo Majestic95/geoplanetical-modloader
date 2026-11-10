@@ -2,7 +2,7 @@ GEOPLANETICAL MOD LOADER
 ========================
 
 The Geoplanetical Mod Loader starts Geoplanetical with the mods you choose. Each mod has a switch; the mods you
-switch on are applied to the game's code in memory when the game starts. The game's files are never changed.
+switch on are applied to the game's code when the game starts. Your Steam game's files are never changed.
 Single player only.
 
 
@@ -54,9 +54,21 @@ PLAYING
    mod's author launcher.log.
    "Open log" shows what it did; "Quit" closes it (do not quit while the game is running).
 
-What the loader does: it reads the game's own code, applies the mods' changes in memory, and starts
-the game. Without the loader the game is the normal game, and starting it from Steam as usual plays
-your normal Steam game without mods.
+What the loader does: it reads the game's own code, applies the mods' changes as the game starts (in
+memory, or for the simulation in the frozen game's folder: see below), and starts the game. Without
+the loader the game is the normal game, and starting it from Steam as usual plays your normal Steam
+game without mods.
+
+
+MODS THAT CHANGE THE SIMULATION
+-------------------------------
+From game 1.0.9 on, the game runs its simulation (economy, politics, war) in a background process of its
+own, outside the game's window. A mod that changes it is written into the frozen game's folder while you
+play, and the loader puts the game's own file back when the game closes (or, if the PC or the loader
+stopped first, the next time the loader opens). So:
+- Such a mod plays only in the frozen game, never in your Steam game. The window says so beside the mod.
+- Its code runs inside the game with the same access to your PC as any program you install. Use only
+  mods from authors you trust.
 
 
 PLAYING THROUGH ANOTHER PROGRAM (FOR EXAMPLE MULTIPLAYER)

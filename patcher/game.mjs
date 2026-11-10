@@ -1,11 +1,12 @@
 // Game detection shared by the dev launcher (patcher/launch.mjs) and the player launcher (launcher/main.mjs):
 // Steam's executable, its libraries, the library holding Geoplanetical, the installed build, whether the game is
-// running, and the original bundles read straight from the game's resources/app.asar (read-only). Detection reads
+// running, and the original bundles read straight from the game's resources/app.asar and the files it keeps beside it
+// in app.asar.unpacked (read-only). Detection reads
 // only Steam's own records (two registry values, libraryfolders.vdf, the game's appmanifest); no folder is searched.
 // A game folder given by the user replaces the library lookup.
 // Child processes run with windowsHide so the windowed launcher (launcher/gui.mjs) flashes no console windows.
 import { spawnSync } from 'node:child_process';
-import { readFileSync, existsSync, openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -91,33 +92,101 @@ export function gameRunning() {
   return /Geoplanetical\.exe/i.test(r.stdout);
 }
 
-// Reads files out of an asar archive: a pickle header (4-byte size fields), a JSON index, then the file data.
+// An asar archive: a pickle header (4-byte size fields), a JSON index, then the file data. { index, base } (base: where
+// the file data starts).
+// (an index larger than MAX_INDEX is not a game's: refused before it is read, as patcher/frozen.mjs does)
+const MAX_INDEX = 64 * 1024 * 1024;
+function readIndex(fd) {
+  const head = Buffer.alloc(16);
+  readSync(fd, head, 0, 16, 0);
+  const base = 8 + head.readUInt32LE(4), headerSize = head.readUInt32LE(12);
+  if (headerSize > MAX_INDEX) throw new Error('the archive index is too large for a game archive');
+  const json = Buffer.alloc(headerSize);
+  readSync(fd, json, 0, headerSize, 16);
+  return { index: JSON.parse(json.toString('utf8')), base };
+}
+
+// The index entry of `innerPath` ('renderer/x.js'), or null when the archive has no such file.
+function entryOf(index, innerPath) {
+  let node = index;
+  for (const part of innerPath.split('/').filter(Boolean)) {
+    node = Object.hasOwn(node?.files ?? {}, part) ? node.files[part] : null;
+    if (!node) return null;
+  }
+  return node.files ? null : node;
+}
+
+// The index entry of one file of the archive at `asarPath` ({ size, offset } or { size, unpacked }, and integrity), or
+// null.
+export function asarEntry(asarPath, innerPath) {
+  const fd = openSync(asarPath, 'r');
+  try { return entryOf(readIndex(fd).index, innerPath); } finally { closeSync(fd); }
+}
+
+// Whether `data` is the file the index entry describes: its size, and its SHA-256 when the index records one (the
+// game's archives record one for every file). `required`: no record is a mismatch too.
+export function matchesEntry(data, entry, required = false) {
+  if (data.length !== Number(entry.size)) return false;
+  const integrity = entry.integrity;
+  if (integrity?.algorithm !== 'SHA256') return !required;
+  return createHash('sha256').update(data).digest('hex') === String(integrity.hash).toLowerCase();
+}
+
+// Reads a file of an asar archive. A file the archive keeps outside itself (index entry marked "unpacked": game 1.0.9
+// and later keep the simulation and its helper workers there) is read from <archive>.unpacked; Electron does not check
+// those, so the index must record its SHA-256 and the file must match it.
 export function readAsarFile(asarPath, innerPath) {
   const fd = openSync(asarPath, 'r');
   try {
-    const head = Buffer.alloc(16);
-    readSync(fd, head, 0, 16, 0);
-    const base = 8 + head.readUInt32LE(4), headerSize = head.readUInt32LE(12);
-    const json = Buffer.alloc(headerSize);
-    readSync(fd, json, 0, headerSize, 16);
-    let node = JSON.parse(json.toString('utf8'));
-    for (const part of innerPath.split('/').filter(Boolean)) {
-      node = node?.files?.[part];
-      if (!node) throw new Error(`${innerPath} is not in ${asarPath}`);
+    const { index, base } = readIndex(fd);
+    const node = entryOf(index, innerPath);
+    if (!node) throw new Error(`${innerPath} is not in ${asarPath}`);
+    let data;
+    if (node.unpacked) {
+      const parts = innerPath.split('/').filter(Boolean);
+      if (parts.some(p => p === '.' || p === '..' || /[\\:]/.test(p))) throw new Error(`${innerPath}: not a plain path in the archive`);
+      const file = join(`${asarPath}.unpacked`, ...parts);
+      if (statSync(file).size !== Number(node.size)) {
+        throw new Error(`${innerPath} in ${asarPath}.unpacked does not match the archive's own record of it (a damaged game file)`);
+      }
+      data = readFileSync(file);
+    } else {
+      const size = Number(node.size);
+      data = Buffer.alloc(size);
+      if (readSync(fd, data, 0, size, base + Number(node.offset)) !== size) throw new Error(`${innerPath} is cut short in ${asarPath}`);
     }
-    if (node.unpacked) throw new Error(`${innerPath} is unpacked outside the archive; not supported`);
-    const size = Number(node.size), data = Buffer.alloc(size);
-    if (readSync(fd, data, 0, size, base + Number(node.offset)) !== size) throw new Error(`${innerPath} is cut short in ${asarPath}`);
     // The index carries each file's SHA-256 (as the game's archives do): the text read must be that file. With the
     // index itself checked (patcher/frozen.mjs), this makes it the pinned build's.
-    const integrity = node.integrity;
-    if (integrity?.algorithm === 'SHA256' && createHash('sha256').update(data).digest('hex') !== integrity.hash) {
-      throw new Error(`${innerPath} in ${asarPath} does not match the archive's own record of it (a damaged game file)`);
+    if (!matchesEntry(data, node, !!node.unpacked)) {
+      throw new Error(`${innerPath} in ${asarPath}${node.unpacked ? '.unpacked' : ''} does not match the archive's own record of it (a damaged game file)`);
     }
     return data;
   } finally {
     closeSync(fd);
   }
+}
+
+// The renderer bundles a game folder keeps outside its archive (game 1.0.9 and later: the simulation and its helper
+// workers, which the game runs in a Node process of its own, out of reach of the loader's DevTools connection). A Set of
+// file names; empty when the folder has no readable archive. Kept while the archive's size and time are the same (the
+// window asks for it on every refresh).
+const outsideCache = new Map();
+export function unpackedBundles(gameDir) {
+  const asar = join(gameDir, 'resources', 'app.asar');
+  let key;
+  try { const st = statSync(asar); key = `${st.size}|${st.mtimeMs}`; } catch { return new Set(); }
+  const hit = outsideCache.get(asar);
+  if (hit?.key === key) return hit.names;
+  let names = new Set();
+  try {
+    const fd = openSync(asar, 'r');
+    try {
+      const renderer = readIndex(fd).index.files?.renderer?.files ?? {};
+      names = new Set(Object.keys(renderer).filter(n => /\.bundle\.js$/.test(n) && !renderer[n].files && renderer[n].unpacked));
+    } finally { closeSync(fd); }
+  } catch { /* not an archive the loader can read: nothing outside it */ }
+  outsideCache.set(asar, { key, names });
+  return names;
 }
 
 // The original text of a renderer bundle of the installed game.

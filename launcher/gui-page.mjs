@@ -74,7 +74,7 @@ export default String.raw`<!doctype html>
 <body>
 <main>
   <header><h1>Geoplanetical Mod Loader</h1><span class="chip" id="version"></span><span class="chip warn hidden" id="dry">Dry run</span></header>
-  <p class="sub">Starts Geoplanetical with the mods you switch on (single player): your frozen copy of the game, or the live Steam game. Or hands them to a program you add below. Game files are never changed.</p>
+  <p class="sub">Starts Geoplanetical with the mods you switch on (single player): your frozen copy of the game, or the live Steam game. Or hands them to a program you add below. Your Steam game's files are never changed.</p>
 
   <div id="banner" class="banner hidden"></div>
 
@@ -317,6 +317,9 @@ export default String.raw`<!doctype html>
       }
       if (m.scripts) card.appendChild(el('div', 'mod-note', 'Also runs its own script in the game\u2019s window.'));
       if (m.wording) card.appendChild(el('div', 'mod-note', 'Also changes wording in the game\u2019s window (English and French).'));
+      if (m.outside) card.appendChild(el('div', 'mod-note', s.game && s.game.frozen
+        ? 'Changes the simulation, which this game version runs outside the game window: written into the frozen game while you play, it runs with the same access to your PC as any program you install. Use only mods from authors you trust.'
+        : 'Changes the simulation, which this game version runs outside the game window: it plays only in the frozen game, never in your Steam game.'));
       if (m.requires.length) {
         var needs = m.requires.map(function (id) {
           var r = s.mods.filter(function (o) { return o.id === id; })[0];

@@ -22,7 +22,7 @@ import { resolve, join } from 'node:path';
 import { buildBundle } from './patch-engine.mjs';
 import { modArgs, argValue, MODS_DIR } from './build.mjs';
 import { loadMods } from './mods.mjs';
-import { findGame, gameRunning, steamExe, originalBundle } from './game.mjs';
+import { findGame, gameRunning, steamExe, originalBundle, unpackedBundles } from './game.mjs';
 import { launchAndServe } from './runner.mjs';
 import { PIN, frozenPlaces, checkFolder, checkProblem, steamRunning, copySavesOnce } from './frozen.mjs';
 import { PAGE, PAGE_BUNDLE } from './session.mjs';
@@ -64,6 +64,14 @@ async function main() {
     const mods = loadMods(modsDir, { only: modArgs(argv) });
     if (!mods.length) fail(`no mods in ${modsDir}; use --unpatched for a baseline run`);
     log(`mods: ${mods.map(m => `${m.id} ${m.version}`).join(', ')}`);
+    // Code the game runs outside its window (its simulation, from game 1.0.9 on) cannot be reached through DevTools:
+    // the loader writes it into its frozen copy for a session (launcher/core.mjs playSession). This tool does not.
+    const outside = unpackedBundles(game.dir);
+    const onDisk = [...new Set(mods.flatMap(m => m.patches.map(p => p.bundle)))].filter(b => outside.has(b));
+    if (onDisk.length) {
+      fail(`${onDisk.join(', ')} ${onDisk.length > 1 ? 'run' : 'runs'} outside the game window in build ${build}; play mods that change ` +
+        `${onDisk.length > 1 ? 'them' : 'it'} with the loader's frozen game (node launcher/main.mjs), not with this tool`);
+    }
     // The original bundles come from the installed game's app.asar, as in the player launcher.
     for (const bundle of [...new Set(mods.flatMap(m => m.patches.map(p => p.bundle)))].sort()) {
       const r = buildBundle(originalBundle(game, bundle), mods, { build, bundle });

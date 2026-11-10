@@ -7,7 +7,7 @@ import { findGame, gameRunning, steamExe, steamPath } from '../patcher/game.mjs'
 import { PIN, frozenPlaces } from '../patcher/frozen.mjs';
 import {
   VERSION, PRODUCT, MODS, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
-  playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY,
+  playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY, outsideMods,
 } from './core.mjs';
 import { repairPlaces, frozenStatus, copyIn, steamDownload } from './freeze.mjs';
 
@@ -94,7 +94,7 @@ export async function runConsole({ dryRun, port, gameDirArg }) {
     }
     if (gameRunning()) continue;
     const built = buildMods(game, chosen, log);
-    if (built.error) { console.log(built.error); continue; }
+    if (built.error) { console.log(built.error.replace('(Frozen game, above)', '(G then Enter)')); continue; }
     let frozenDir = null;
     if (game.frozen) {
       // (a dry run checks the copy, not Steam, and copies no saves) The check is the last step before the start.
@@ -104,9 +104,10 @@ export async function runConsole({ dryRun, port, gameDirArg }) {
     }
     if (dryRun) { log('dry run: everything checks out; the game was not started'); rl.close(); return; }
     console.log('Leave this window open while you play: it keeps the mods active. Closing it early turns them off for\n' +
-      'parts of the game that restart. Saves made now need the same mods to load correctly.');
+      'parts of the game that restart. Saves made now need the same mods to load correctly.' +
+      (built.disk.size ? ' Mods written into the frozen game are put back\nonce it closes (or the next time the loader opens).' : ''));
     const end = await playSession({
-      steam, frozen: frozenDir ? { dir: frozenDir, dataDir: game.dataDir } : null,
+      steam, frozen: frozenDir ? { dir: frozenDir, dataDir: game.dataDir, notes: game.notes } : null, disk: built.disk,
       port, payloads: built.payloads, scripts: built.scripts, chosen, log,
     });
     await exitAfterKey(end.problem ? 1 : 0, end.message);
@@ -185,6 +186,8 @@ function screen({ game, live, frozen, places, play }, mods, broken, enabled) {
   if (play === 'live' && live?.updating) console.log(`    Steam is updating the game${live.targetBuild ? ` to build ${live.targetBuild}` : ''}: it cannot be started with mods until that finishes.`);
   console.log(`Mods folder: ${MODS}\n`);
   if (!mods.length && !broken.length) console.log('  (no mods found; put a mod folder inside the mods folder)');
+  let outside = new Set();
+  try { outside = new Set(outsideMods(mods, game).map(m => m.id)); } catch { /* the game's archive cannot be read */ }
   mods.forEach((m, i) => {
     const fits = !!game && m.builds.includes(game.build);
     const box = !fits ? '[ unavailable ]' : enabled(m) ? '[x]' : '[ ]';
@@ -196,6 +199,13 @@ function screen({ game, live, frozen, places, play }, mods, broken, enabled) {
     }
     if (m.scripts?.length) console.log('        also runs its own script in the game\'s window');
     if (m.patches?.some(p => p.bundle === PAGE_BUNDLE)) console.log('        also changes wording in the game\'s window (English and French)');
+    if (outside.has(m.id)) {
+      console.log(game.frozen
+        ? wrap('changes the simulation, which this game version runs outside the game window: written into the frozen game ' +
+          'while you play, it runs with the same access to your PC as any program you install. Use only mods from authors you trust.', 104, '        ', '        ')
+        : wrap('changes the simulation, which this game version runs outside the game window: it plays only in the frozen game, ' +
+          'never in your Steam game.', 104, '        ', '        '));
+    }
     if (m.changes?.length) {
       console.log(`        What it changes:`);
       for (const g of changeGroups(m)) {

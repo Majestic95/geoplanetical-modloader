@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **The frozen game moves to game 1.1.0 (build `26519199`).** It replaces 1.0.8 (`26403824`): the window shows the
+  copy as an older version until the new one is in place, by the same three ways as before (copy from the Steam game
+  while it is that build, download it with Steam, or copy a folder); the new copy replaces the old once it checks.
+  Saves stay where they are; game 1.1.0 warns that older saves may not load correctly. Mods need porting to the new
+  build (their `builds`).
+- **Mods that change the simulation, from game 1.0.9 on.** The game now runs its simulation and helper workers
+  (market, war theatre, save codec) in a Node process of its own, loaded from `resources\app.asar.unpacked`, out of
+  reach of the debugging port. The loader writes the patched code into its frozen game's folder just before the start
+  (the original kept beside it) and puts the original back once no Geoplanetical process runs; a copy left changed by
+  a crash or by quitting the loader during play is put back the next time the loader opens or checks it, and never
+  while the game runs. The Steam game is never written: on it, such a mod is refused at Play with a message saying it
+  plays only in the frozen game. The window and the player README say plainly that such code runs with the same access
+  to the PC as any program. Short notes the written code leaves as Node loads it confirm it in the log (`mods active
+  (...)`); a bundle that never started is no longer reported as "most likely ran the UNMODDED game". No format change:
+  the patched text is built byte for byte as before. `patcher/launch.mjs` refuses such mods and points to the loader.
+- The loader reads a game file kept beside the archive only when it matches the size and SHA-256 the archive records
+  for it.
 - **Author tools: `tools/asar_extract.py` copies unpacked files.** Since game 1.0.9 the worker bundles (including
   `simulation-worker.bundle.js`) and `renderer/runtime-data/` are kept beside the archive in `app.asar.unpacked`; the
   tool skipped them without a word. It now copies them, refusing any whose size, or SHA-256 when the index records one,
