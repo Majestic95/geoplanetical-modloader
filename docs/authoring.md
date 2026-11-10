@@ -47,6 +47,11 @@ python -I <loader>/tools/asar_extract.py "<game folder>/resources/app.asar" .mod
 The last arguments are path prefixes inside the archive. Name each bundle you need: the whole `/renderer` folder is
 several gigabytes, mostly media. Most of the simulation lives in `simulation-worker.bundle.js`.
 
+From game 1.0.9 on, the worker bundles and `renderer/runtime-data/` sit next to the archive, in
+`resources\app.asar.unpacked`. The tool copies those from there and checks each one's size (and SHA-256, when the index
+records one) against the archive's index, refusing a file that differs. It prints how many files it wrote and fails when a prefix matches
+nothing.
+
 ## 3. Find the code to change
 
 The bundles are minified single-line files of 30 to 100 MB, so ordinary search tools print far too much. Use:

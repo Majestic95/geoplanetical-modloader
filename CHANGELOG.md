@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Author tools: `tools/asar_extract.py` copies unpacked files.** Since game 1.0.9 the worker bundles (including
+  `simulation-worker.bundle.js`) and `renderer/runtime-data/` are kept beside the archive in `app.asar.unpacked`; the
+  tool skipped them without a word. It now copies them, refusing any whose size, or SHA-256 when the index records one,
+  differs from the archive's index, refuses archive paths that would leave the output folder, prints what it wrote, and fails when a prefix
+  matches nothing. Files inside the archive come out byte for byte as before.
+
 ## 0.7.0 (2026-11-04)
 
 - **Mod format 3: wording changes.** A patch to `app.bundle.js`, the game's main-page bundle, can now correct the
