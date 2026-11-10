@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 (not released yet)
+## 0.8.0 (2026-11-10)
 
 - **The frozen game moves to game 1.1.0 (build `26519199`).** It replaces 1.0.8 (`26403824`): the window shows the
   copy as an older version until the new one is in place, by the same three ways as before (copy from the Steam game
