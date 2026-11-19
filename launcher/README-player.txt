@@ -95,6 +95,11 @@ SAVES
   Steam saves are copied into it; after that the two save lists are separate. Steam Cloud does NOT back
   up the frozen game's saves: "Open its saves" in the window shows where they are
   (%LOCALAPPDATA%\GeoplaneticalModLauncher\game-data\saves), if you want to back them up yourself.
+- When a loader release moves the frozen game to a new game version, the loader no longer starts the old
+  version, and games saved in it may not work in the new one: they stay in the save list but may not load,
+  or may not play correctly (the same goes for older Steam saves copied in the first time). Loader 0.9.0
+  moves to game 1.1.5: saves from game 1.1.0 or earlier are not supported there. Keep playing those games
+  with your current loader until you are ready to leave them, then update.
 - Steam Cloud syncs your Steam game's saves. When you try a new mod, start a new game and save it under
   a new name so you do not overwrite a campaign you care about.
 - A save made with mods needs the same mods to load correctly: load it through the loader with the
@@ -125,6 +130,8 @@ is updating the game, the loader waits for the update to finish.
 UPDATING THE LOADER
 -------------------
 Unzip the new version over this folder. Your mods and launcher-settings.json stay.
+If the new version moves the frozen game to a new game version, read SAVES above first: your games saved
+in the old version may not work in the new one.
 
 
 REMOVING IT

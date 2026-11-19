@@ -6,9 +6,11 @@
   the window shows the copy as an older version until the new one is in place, by the same three ways as before (copy
   from the Steam game while it is that build, download it with Steam, or copy a folder); the new copy replaces the old
   once it checks. It is about 4.1 GB; free space needed: about 5 GB, and to download it with Steam about 4 GB more on
-  Steam's drive (about 9 GB if they share a drive; the player README now says so). Saves stay where they are. Mods need
-  porting to the new build (their `builds`). The game keeps the same layout as 1.1.0 (the same four bundles beside its
-  archive, loaded the same way), so nothing else changes in the loader.
+  Steam's drive (about 9 GB if they share a drive; the player README now says so). Saves: games saved in 1.1.0 or
+  earlier are not supported in 1.1.5 (they stay in the list but may not load), and 1.1.5 saves are for 1.1.5 only;
+  the loader leaves the saves folder as it is.
+  Mods need porting to the new build (their `builds`). The game keeps the same layout as 1.1.0 (the same four bundles
+  beside its archive, loaded the same way), so nothing else changes in the loader.
 
 ## 0.8.0 (2026-11-10)
 

@@ -41,7 +41,9 @@ The included `README.txt` covers saves, updates and what to do when something go
   program you start from the loader gets them written into the frozen game the same way.
 - **Game updates:** a Steam update does not stop the mods: the frozen game stays on its version. Each mod states the
   game builds it was made for; when a loader release moves to a newer game version, the mods follow, and the loader
-  replaces its copy once you get the new one.
+  replaces its copy once you get the new one. Games saved in the older version may not work in the new one (loader
+  0.9.0, game 1.1.5: saves from 1.1.0 or earlier are not supported); keep playing them with your current loader until
+  you are ready to leave them, then update.
 - The executable is not code-signed, so Windows asks for confirmation the first time.
 
 ## For mod authors
