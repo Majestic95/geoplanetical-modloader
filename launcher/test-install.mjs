@@ -87,7 +87,7 @@ expect('zip: a wrong CRC is refused', () => readZip(zip([{ name: 'x', data: 'abc
 expect('zip: data longer than declared is refused', () => readZip(zip([{ name: 'x', data: 'abcdef', usize: 2 }])), { throws: /damaged at "x"/ });
 expect('zip: encrypted is refused', () => readZip(zip([{ name: 'x', data: 'a', flags: 1 }])), { throws: /encrypted/ });
 expect('zip: unknown method is refused', () => readZip(zip([{ name: 'x', data: 'a', method: 12 }])), { throws: /compression/ });
-expect('zip: declared size over the cap is refused before inflating', () => readZip(zip([{ name: 'x', data: 'a', usize: 40 * 1024 * 1024 }])), { throws: /unpacks to more than/ });
+expect('zip: declared size over the cap is refused before inflating', () => readZip(zip([{ name: 'x', data: 'a', usize: 170 * 1024 * 1024 }])), { throws: /unpacks to more than/ });
 expect('zip: entries sharing their bytes are refused', () => readZip(zip([{ name: 'a', data: 'x'.repeat(1000) }, { name: 'b', alias: 0 }, { name: 'c', alias: 0 }])), { throws: /damaged at "[bc]"/ });
 expect('zip: not a zip', () => readZip(Buffer.from('just text, long enough to search for an end record')), { throws: /not a zip/ });
 {
@@ -170,7 +170,7 @@ const unchanged = (name, prepare, items, re) => {
   expect(name, () => install(items, mods), { throws: re });
   expect(`${name}: mods folder unchanged`, () => snapshot(mods), { check: s => s === before });
 };
-unchanged('refused: no mod.json', m => placeMod(m, 'keep', 'keep'), [asItem('x.zip', [{ name: 'readme.txt', data: 'hi' }])], /no mod\.json found/);
+unchanged('refused: no mod.json', m => placeMod(m, 'keep', 'keep'), [asItem('x.zip', [{ name: 'readme.txt', data: 'hi' }])], /no mod\.json or program\.json found/);
 unchanged('refused: a broken mod', m => placeMod(m, 'eps', 'eps'), [asItem('eps.zip', modFiles('', 'eps', { typo: 1 }))], /^eps\.zip: mod\.json: unknown field "typo"$/);
 unchanged('refused: a missing patch file named relative to the mod', () => {}, [asItem('mp.zip', modFiles('', 'mp', { patches: ['patches/none.json'] }))], /^mp\.zip: patches[\\/]none\.json: ENOENT[^:]*: no such file or directory, open 'patches[\\/]none\.json'$/);
 unchanged('refused: needs a newer loader', () => {}, [asItem('new.zip', modFiles('', 'newer', { format: FORMAT + 1 }))], /needs a newer Geoplanetical Mod Loader/);
@@ -183,8 +183,51 @@ unchanged('refused: folder name taken by another mod', m => placeMod(m, 'zeta', 
 unchanged('refused: folder name taken by a non-mod folder', m => mkdirSync(join(m, 'eta')), [asItem('eta.zip', modFiles('', 'eta'))], /already has a folder named "eta"/);
 unchanged('refused: the same id twice in one drop', () => {}, [asItem('a.zip', modFiles('', 'twin')), asItem('b.zip', modFiles('', 'twin'))], /"twin" is in what was added more than once \(a\.zip, b\.zip\)/);
 {
+  // (a drop may hold up to 160 MB, for a program; each mod in it still at most 32 MB)
   const big = 'x'.repeat(20 * 1024 * 1024);
-  unchanged('refused: the byte limit holds across items', () => {}, [asItem('b1.zip', [...modFiles('', 'b1'), { name: 'big', data: big }]), asItem('b2.zip', [...modFiles('', 'b2'), { name: 'big', data: big }])], /unpacks to more than 32 MB/);
+  unchanged('refused: a mod over 32 MB', () => {}, [asItem('b1.zip', [...modFiles('', 'b1'), { name: 'big', data: big }, { name: 'big2', data: big }])], /too large to be a mod/);
+  expect('two mods of 20 MB each install together', () => install([asItem('b1.zip', [...modFiles('', 'b1'), { name: 'big', data: big }]), asItem('b2.zip', [...modFiles('', 'b2'), { name: 'big', data: big }])], fresh()).added.length,
+    { check: c => c === 2 });
+}
+
+// Programs (launcher/programs.mjs): a folder with a program.json goes to the programs folder, never to mods.
+{
+  const programJson = (id, extra = {}) => JSON.stringify({ format: 1, id, name: 'Multi', version: '1.0', description: 'Plays with friends.', exe: 'Multi.exe', ...extra });
+  const programFiles = (prefix, id, extra) => [{ name: `${prefix}program.json`, data: programJson(id, extra) }, { name: `${prefix}Multi.exe`, data: 'MZ' }];
+  const mods = fresh(), programs = fresh();
+  expect('program: a program zip installs into the programs folder', () => install([asItem('multi.zip', programFiles('Multi/', 'multi'))], mods, { programsDir: programs }).added[0],
+    { check: a => a.kind === 'program' && a.id === 'multi' && existsSync(join(programs, 'multi', 'Multi.exe')) && !existsSync(join(mods, 'multi')) });
+  expect('program: a new version replaces the old one', () => install([asItem('multi2.zip', programFiles('', 'multi', { version: '2.0' }))], mods, { programsDir: programs }).added[0],
+    { check: a => a.replaced.join() === '1.0' && JSON.parse(readFileSync(join(programs, 'multi', 'program.json'), 'utf8')).version === '2.0' });
+  expect('program: a pack with a mod and a program installs both', () => install([asItem('pack.zip', [...modFiles('mods/pi/', 'pi'), ...programFiles('programs/Other/', 'other')])], mods, { programsDir: programs }).added.map(a => `${a.kind}:${a.id}`).sort().join(),
+    { check: s => s === 'mod:pi,program:other' && existsSync(join(mods, 'pi', 'mod.json')) && existsSync(join(programs, 'other', 'program.json')) });
+  unchanged('refused: a program where programs cannot be added', () => {}, [asItem('m.zip', programFiles('', 'nowhere'))], /holds a program, which cannot be added here/);
+  unchanged('refused: one folder with both a mod.json and a program.json', () => {}, [asItem('both.zip', [...modFiles('', 'both'), ...programFiles('', 'both')])], /both a mod\.json and a program\.json/);
+  expect('refused: a program.json with an unknown field, named relative to the drop', () => install([asItem('odd.zip', programFiles('', 'odd', { run: 'x' }))], fresh(), { programsDir: fresh() }),
+    { throws: /^odd\.zip: program\.json: unknown field "run"/ });
+  expect('refused: a program whose exe is missing', () => install([asItem('noexe.zip', [{ name: 'program.json', data: programJson('noexe') }])], fresh(), { programsDir: fresh() }),
+    { throws: /Multi\.exe is not in the program's folder/ });
+  unchanged('refused: a mod and a program in one folder spelled in two letter cases', () => {}, [asItem('case.zip', [...modFiles('Pack/', 'case'), ...programFiles('pack/', 'case')])], /both a mod\.json and a program\.json/);
+  expect('refused: a mod inside a program\'s folder', () => install([asItem('nest.zip', [...programFiles('', 'nest'), ...modFiles('examples/m/', 'm')])], fresh(), { programsDir: fresh() }),
+    { throws: /is inside the top folder \(a program\); put mods and programs side by side/ });
+  {
+    const many = fresh(), mm = fresh();
+    for (let i = 0; i < 8; i++) install([asItem(`p${i}.zip`, programFiles('', `p${i}`))], mm, { programsDir: many });
+    expect('refused: a ninth program', () => install([asItem('p8.zip', programFiles('', 'p8'))], mm, { programsDir: many }), { throws: /at most 8 programs/ });
+    expect('a new version of one of eight programs still installs', () => install([asItem('p3.zip', programFiles('', 'p3', { version: '2.0' }))], mm, { programsDir: many }).added[0].replaced.join(), { check: v => v === '1.0' });
+  }
+  {
+    // A failure on the program's move undoes the mod moved before it, and nothing is left in either folder.
+    const mm = fresh(), pp = join(fresh(), 'programs');
+    placeMod(mm, 'keep', 'keep');
+    let calls = 0;
+    // (moves in order: the old mod aside, the new mod in, then the program in: the third fails)
+    const failing = (from, to) => { if (++calls === 3) throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' }); renameSync(from, to); };
+    expect('rollback across the two folders', () => install([asItem('pk.zip', [...modFiles('mods/keep/', 'keep', { version: '2.0.0' }), ...programFiles('programs/x/', 'x')])], mm, { programsDir: pp, rename: failing }),
+      { throws: /EPERM/ });
+    expect('rollback across the two folders: the old mod is back, no program left', () => [JSON.parse(readFileSync(join(mm, 'keep', 'mod.json'), 'utf8')).version, existsSync(join(pp, 'x'))],
+      { check: ([v, p]) => v === '1.0.0' && !p });
+  }
 }
 
 // Install: a failure part-way puts everything back.
@@ -235,8 +278,10 @@ unchanged('refused: the same id twice in one drop', () => {}, [asItem('a.zip', m
   expect('page: nothing to add', () => itemsFromPage({}), { throws: /nothing to add/ });
   expect('page: more than 20 items', () => itemsFromPage({ items: Array(21).fill({ name: 'x', zip: '' }) }), { throws: /nothing to add/ });
   expect('page: an item that is neither', () => itemsFromPage({ items: [{ name: 'odd', files: [{ path: 1, data: 'x' }] }] }), { throws: /odd: not a zip file or a folder/ });
-  const big = zip([{ name: 'big', data: 'y'.repeat(20 * 1024 * 1024) }]).toString('base64');
-  expect('page: the byte limit holds across zips', () => itemsFromPage({ items: [{ name: 'a', zip: big }, { name: 'b', zip: big }] }), { throws: /unpacks to more than 32 MB/ });
+  // (the second zip's declared size takes the total over the limit while its directory is read, before inflating)
+  const real = zip([{ name: 'real', data: 'y'.repeat(20 * 1024 * 1024) }]).toString('base64');
+  const big = zip([{ name: 'big', data: 'y', usize: 150 * 1024 * 1024 }]).toString('base64');
+  expect('page: the byte limit holds across zips', () => itemsFromPage({ items: [{ name: 'a', zip: real }, { name: 'b', zip: big }] }), { throws: /unpacks to more than 160 MB/ });
 }
 
 // A zip made by Windows PowerShell's Compress-Archive (backslash separators in 5.1), as players and package.mjs make them.

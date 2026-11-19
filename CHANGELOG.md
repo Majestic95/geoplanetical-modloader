@@ -5,9 +5,9 @@
 - **A cleaner window.** The main view shows one line for the game (ready, not set up, older, being set up), then
   the mods: each with its switch, its version and its `description` from `mod.json` (shown for the first time, up to 300 characters), what
   stops it from playing right under it, and a **Details** link for everything else (what it changes, page scripts,
-  wording, requirements), closed by default. **Play** sits at the bottom, with a **Play with** button for each added
-  program beside it. Everything used less often moved to **Settings**: which game to play (frozen or Steam), the
-  frozen game (get it again, its saves), the Steam game's folder, programs (Add program, Remove), the mods folder,
+  wording, requirements), closed by default. **Play** sits at the bottom. Everything used less often moved to
+  **Settings**: which game to play (frozen or Steam), the
+  frozen game (get it again, its saves), the Steam game's folder, programs (Open programs folder; Add program, and Remove for programs added that way), the mods folder,
   the log.
 - **First-start setup.** When the frozen game is chosen and missing, older or broken, the window opens on a setup
   step that says what the frozen game is and asks before anything happens: "Get game 1.1.5 from Steam now?", with
@@ -23,7 +23,18 @@
   read again. Each check of the frozen game (after a session, Refresh, setting it up) now marks it as being checked, and Play and a program's start wait until it is done.
 - Installing mods: the player README and the README say plainly to download a mod's `.zip` from its author's page
   and drop it on the window, without unzipping it. No mod is named or linked by the loader.
-- No change to the mod format, the settings file or the programs contract.
+- **Programs listed with the mods, installed like mods.** A program (such as a multiplayer launcher) can ship as a
+  folder with a `program.json` (format 1: `id`, `name`, `version`, `description`, `exe`, optional `author` and
+  `builds`; docs/authoring.md#programs). Dropped on the window like a mod, it is installed into a new `programs`
+  folder beside `mods` (a newer version replaces the older one), and listed with the mods, marked **Program**, with a
+  switch: switched on (one at a time), the main button reads **Play with** and its name and starts the game through
+  it, as **Play with** did before. Before a program folder's first start the loader shows its full path and asks the
+  player, and asks again whenever any file in its folder changes (the confirmation is tied to a SHA-256 of the whole
+  folder, checked again right before each start). A drop may now be up to 160 MB (each mod in it still at most 32
+  MB). At most 8 program folders are listed; two with one id are both refused. Programs added with **Add program** or by an installer's settings entry are listed and switched on the same
+  way; how a program is started (`--loader`, `--game`, `--written`) is unchanged. New settings keys, the loader's
+  own: `playWith`, `confirmedPrograms`.
+- No change to the mod format.
 
 ## 0.9.0 (not released yet)
 

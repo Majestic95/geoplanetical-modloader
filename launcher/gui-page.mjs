@@ -190,7 +190,7 @@ export default String.raw`<!doctype html>
   <!-- Setup, step 2: the first mods -->
   <section id="v-mods" class="hidden"><div class="narrow">
     <h2>Add your mods</h2>
-    <p class="lead">Download a mod’s .zip file from its author’s page, then drop it on this window. There is no need to unzip it, and you can add several at once.</p>
+    <p class="lead">Download a mod’s .zip file from its author’s page, then drop it on this window. There is no need to unzip it, and you can add several at once. A program that plays the mods, such as a multiplayer launcher, is added the same way.</p>
     <button class="drop" id="drop-zone"><span class="big">Drop mod .zip files or folders here</span><span class="note">or click to choose a file. Each mod is checked before it is added.</span></button>
     <div id="m-list"></div>
     <div class="row" style="margin-top:14px"><span class="note">You can add more mods any time from the main window.</span><span class="spacer"></span><button class="btn link" id="m-skip">Skip</button><button class="btn primary" id="m-done">Done</button></div>
@@ -239,8 +239,8 @@ export default String.raw`<!doctype html>
       </div>
     </section>
     <section class="card">
-      <div class="card-title"><span class="spacer">Programs</span><button class="btn" id="add-program">Add program&hellip;</button></div>
-      <div class="note">Other programs that start the game with the mods switched on here, such as a multiplayer launcher: click Add program and choose its .exe file. Add only programs you trust: unlike a mod, a program can do anything on your PC.</div>
+      <div class="card-title"><span class="spacer">Programs</span><button class="btn" id="open-programs">Open programs folder</button><button class="btn" id="add-program">Add program&hellip;</button></div>
+      <div class="note">Other programs that start the game with the mods switched on here, such as a multiplayer launcher. They are listed with the mods: switch one on there to play through it. Drop a program’s .zip on this window like a mod; or, for a program that came without a program.json, click Add program and choose its .exe file. Add only programs you trust: unlike a mod, a program can do anything on your PC.</div>
       <div id="programs" style="margin-top:8px"></div>
     </section>
     <section class="card">
@@ -259,7 +259,6 @@ export default String.raw`<!doctype html>
 
 <div class="bar"><div class="inner">
   <button class="btn primary big" id="play">Play</button>
-  <span id="prog-buttons" class="row"></span>
   <span id="play-note" class="note"></span>
   <span class="spacer"></span>
   <button class="btn ghost" id="quit">Quit</button>
@@ -268,7 +267,7 @@ export default String.raw`<!doctype html>
 <script>
 (function () {
   var token = new URLSearchParams(location.search).get('t');
-  var st = null, modsKey = '', setupModsKey = '', programsKey = '', progButtonsKey = '', openMods = {}, gone = false, lastLogSeq = -1, adding = false;
+  var st = null, modsKey = '', setupModsKey = '', programsKey = '', openMods = {}, gone = false, lastLogSeq = -1, adding = false;
   // view: setup | mods | main | settings ; decided: the first view was chosen from the first settled state
   var view = 'main', decided = false, errText = '', bannerText = '';
   var $ = function (id) { return document.getElementById(id); };
@@ -297,7 +296,9 @@ export default String.raw`<!doctype html>
   function paintErr() { $('err-text').textContent = errText; hide('err', !errText || errText === bannerText); }
   function show(v) { view = v; errText = ''; if (st) render(st); window.scrollTo(0, 0); }
   // After the game step: the mods step while there is no mod yet, else the main view.
-  function afterGame() { show(st && (st.mods.length || st.broken.length) ? 'main' : 'mods'); }
+  function afterGame() { show(st && hasAnything(st) ? 'main' : 'mods'); }
+  // (programs count too: a program may play with no mod)
+  function hasAnything(s) { return !!(s.mods.length || s.broken.length || s.programs.length || s.brokenPrograms.length); }
 
   var lastPhase = null;
   function render(s) {
@@ -310,7 +311,7 @@ export default String.raw`<!doctype html>
     if (!decided && f.status !== 'checking') {
       decided = true;
       if (s.play !== 'live' && (f.status === 'missing' || f.status === 'other' || f.status === 'broken')) view = 'setup';
-      else if (!s.mods.length && !s.broken.length) view = 'mods';
+      else if (!hasAnything(s)) view = 'mods';
     }
     var ready = s.phase === 'ready';
     $('version').textContent = 'v' + s.version;
@@ -420,7 +421,7 @@ export default String.raw`<!doctype html>
 
   // --- Setup: the first mods ---
   function renderModsStep(s) {
-    var key = JSON.stringify([s.mods, s.broken]);
+    var key = JSON.stringify([s.mods, s.broken, s.programs, s.brokenPrograms]);
     if (key === setupModsKey) return;
     setupModsKey = key;
     var box = $('m-list'); box.textContent = '';
@@ -434,7 +435,15 @@ export default String.raw`<!doctype html>
       r.appendChild(el('span', plays ? 'chip ok' : 'chip bad', plays ? 'Ready for your game' : m.fits ? 'Plays only in the frozen game' : 'Not for this game version'));
       box.appendChild(r);
     });
-    s.broken.forEach(function (b) {
+    s.programs.forEach(function (p) {
+      var r = el('div', 'simple');
+      r.appendChild(el('span', 'mod-name', p.name));
+      r.appendChild(el('span', 'note', p.version ? 'v' + p.version : ''));
+      r.appendChild(el('span', 'spacer'));
+      r.appendChild(el('span', 'chip', 'Program'));
+      box.appendChild(r);
+    });
+    s.broken.concat(s.brokenPrograms).forEach(function (b) {
       var r = el('div', 'simple');
       r.appendChild(el('span', 'mod-name', b.folder)); r.appendChild(el('span', 'spacer')); r.appendChild(el('span', 'chip bad', 'Broken'));
       box.appendChild(r); box.appendChild(el('div', 'mod-alert', b.error));
@@ -465,37 +474,31 @@ export default String.raw`<!doctype html>
 
     var on = s.mods.filter(function (m) { return m.fits && m.enabled; }).length;
     $('mods-count').textContent = s.mods.length ? on + ' of ' + s.mods.length + ' on' : '';
-    var key = JSON.stringify([s.mods, s.broken, ready, s.game && s.game.build, s.game && s.game.frozen, s.play, s.live && s.live.build]);
+    var key = JSON.stringify([s.mods, s.broken, s.programs, s.brokenPrograms, s.playWith, ready, s.game && s.game.build, s.game && s.game.frozen, s.play, s.live && s.live.build]);
     if (key !== modsKey) { modsKey = key; renderMods(s, ready); }
 
-    // The bar: Play, the programs, what Play would do
-    var play = $('play'), pn = $('play-note');
+    // The bar: Play (through the program switched on, if any) and what it would do
+    var play = $('play'), pn = $('play-note'), via = activeProgram(s);
     if (s.phase === 'ready') {
       var notReady = !!(s.game && s.game.frozen && !s.game.ready);
-      play.disabled = !s.game || !s.steamFound || on === 0 || !!(s.game && s.game.updating) || notReady || !!t;
-      play.textContent = s.dryRun ? 'Check mods (dry run)' : s.lastEnd ? 'Play again' : 'Play';
+      // (a program may start with no mod switched on: it plays the mods the loader would play)
+      play.disabled = !s.game || !s.steamFound || (on === 0 && !via) || !!(s.game && s.game.updating) || notReady || !!t || !!(via && (via.problem || !via.fits));
+      play.textContent = via ? 'Play with ' + via.name : s.dryRun ? 'Check mods (dry run)' : s.lastEnd ? 'Play again' : 'Play';
       pn.textContent = t ? 'Wait until the frozen game is set up' : notReady ? (f.status === 'checking' ? 'Checking the frozen game…' : f.status === 'unreadable' ? 'Close the game if it runs, then click Refresh' : 'Set up the frozen game first')
         : !s.game ? 'Choose the game folder in Settings' : !s.steamFound ? 'Steam was not found on this PC'
-        : on ? on + ' mod' + (on > 1 ? 's' : '') + ' on · ' + (frozenOn ? 'frozen game ' + V : 'Steam game') : 'Switch a mod on to play with it';
+        : via && via.problem ? via.name + ' cannot be started: see Settings'
+        : via && !via.fits ? via.name + ' is not made for this game version'
+        : (on ? on + ' mod' + (on > 1 ? 's' : '') + ' on · ' : via ? 'No mod on · ' : '') + (on || via ? (frozenOn ? 'frozen game ' + V : 'Steam game') : 'Switch a mod on to play with it');
     } else if (s.phase === 'building') { play.disabled = true; play.textContent = 'Building…'; pn.textContent = ''; }
     else { play.disabled = true; play.textContent = 'Game running'; pn.textContent = ''; }
-    var pk = JSON.stringify([s.programs, ready]);
-    if (pk !== progButtonsKey) {
-      progButtonsKey = pk;
-      var pb = $('prog-buttons'); pb.textContent = '';
-      s.programs.forEach(function (p) {
-        var b = el('button', 'btn', 'Play with ' + p.name);
-        b.disabled = !ready || !!p.problem;
-        if (p.problem) b.title = 'It cannot be started: see Settings.';
-        b.onclick = function () { startProgram(p); };
-        pb.appendChild(b);
-      });
-    }
   }
+  // The program Play starts the game through (switched on in the list), or null.
+  // (a dry run checks the mods and starts no program: Play stays the check)
+  function activeProgram(s) { return s.playWith && !s.dryRun ? s.programs.filter(function (p) { return p.key === s.playWith; })[0] || null : null; }
 
   function renderMods(s, ready) {
     var box = $('mods'); box.textContent = '';
-    if (!s.mods.length) {
+    if (!s.mods.length && !s.programs.length) {
       var d = el('button', 'drop');
       d.appendChild(el('span', 'big', 'No mods yet'));
       d.appendChild(el('span', 'note', 'Drop a mod’s .zip file or folder onto this window, or click here to choose one.'));
@@ -505,14 +508,49 @@ export default String.raw`<!doctype html>
     } else {
       var list = el('div', 'list');
       s.mods.forEach(function (m) { list.appendChild(modRow(s, m, ready)); });
+      s.programs.forEach(function (p) { list.appendChild(programRow(s, p, ready)); });
       box.appendChild(list);
     }
     var bb = $('broken'); bb.textContent = '';
-    s.broken.forEach(function (b) {
+    s.broken.concat(s.brokenPrograms.map(function (b) { return { folder: b.folder, error: b.error, program: true }; })).forEach(function (b) {
       var c = el('div', 'card'), h = el('div', 'row');
-      h.appendChild(el('span', 'mod-name', b.folder)); h.appendChild(el('span', 'chip bad', 'Broken'));
+      h.appendChild(el('span', 'mod-name', b.folder)); h.appendChild(el('span', 'chip bad', b.program ? 'Broken program' : 'Broken'));
       c.appendChild(h); c.appendChild(el('div', 'mod-alert', b.error)); bb.appendChild(c);
     });
+  }
+  // A program in the mods list: switched on, Play starts the game through it (one at a time). It is not a mod: it
+  // starts the game itself, with the mods switched on here, and can do anything on the PC.
+  function programRow(s, p, ready) {
+    var row = el('div', 'mod'), top = el('div', 'mod-row');
+    var isOn = s.playWith === p.key;
+    var sw = el('button', 'switch');
+    sw.setAttribute('role', 'switch'); sw.setAttribute('aria-checked', String(isOn));
+    sw.setAttribute('aria-label', 'Play through ' + p.name);
+    sw.disabled = !ready || (!isOn && (!!p.problem || !p.fits));
+    sw.onclick = function () { api('POST', 'play-with', { key: isOn ? null : p.key }); };
+    top.appendChild(sw);
+    var main = el('div', 'mod-main'), line = el('div');
+    line.appendChild(el('span', 'mod-name', p.name));
+    line.appendChild(el('span', 'note', (p.version ? 'v' + p.version : '') + (p.author ? (p.version ? ' · ' : '') + 'by ' + p.author : '')));
+    main.appendChild(line);
+    main.appendChild(el('div', 'mod-desc', p.description || 'Starts the game itself, with the mods switched on here.'));
+    if (p.problem) main.appendChild(el('div', 'mod-alert', 'It cannot be started: ' + p.problem + '.'));
+    else if (!p.fits) main.appendChild(el('div', 'mod-alert', 'Made for game build ' + p.builds.join(', ') + '; this game is build ' + (s.game ? s.game.build : 'unknown') + '.'));
+    top.appendChild(main);
+    var chip = el('span', 'chip', 'Program');
+    chip.title = 'A program, not a mod: switched on, Play starts the game through it.';
+    top.appendChild(chip);
+    var open = openMods['program:' + p.key] === true;
+    var tg = el('button', 'btn link', open ? 'Hide' : 'Details');
+    tg.setAttribute('aria-expanded', String(open));
+    tg.onclick = function () { openMods['program:' + p.key] = !open; modsKey = ''; render(st); };
+    top.appendChild(tg);
+    row.appendChild(top);
+    var more = el('div', 'mod-more' + (open ? '' : ' hidden'));
+    more.appendChild(el('div', 'note', 'A program, not a mod. Switched on, Play starts the game through it, with the mods switched on here; it may play with no mod on. Unlike a mod, a program can do anything on your PC: the loader asks you once before it first starts it, and again whenever the program changes.'));
+    more.appendChild(el('div', 'path', p.exe));
+    row.appendChild(more);
+    return row;
   }
   // One mod: its switch, name, version, description; what stops it from playing, shown at once; the rest under Details.
   function modRow(s, m, ready) {
@@ -618,39 +656,47 @@ export default String.raw`<!doctype html>
     if (pkey !== programsKey) { programsKey = pkey; renderPrograms(s, ready); }
   }
 
-  // One row per program: its name, its full path (the file the button starts), Play with and Remove.
+  // One row per program: its name, where it comes from, its full path (the file Play starts), and Remove for one
+  // added in the settings (a program folder is removed by deleting its folder).
   function renderPrograms(s, ready) {
     var box = $('programs'); box.textContent = '';
-    if (!s.programs.length) box.appendChild(el('div', 'note', 'No programs added.'));
+    if (!s.programs.length) box.appendChild(el('div', 'note', 'No programs yet.'));
     s.programs.forEach(function (p) {
       var row = el('div', 'prog');
       row.appendChild(el('span', 'mod-name', p.name));
+      row.appendChild(el('span', 'note', p.source === 'folder' ? 'in the programs folder' : 'added'));
       if (p.problem) row.appendChild(el('span', 'chip bad', 'Cannot start'));
       row.appendChild(el('span', 'spacer'));
-      var go = el('button', 'btn', 'Play with ' + p.name);
-      go.disabled = !ready || !!p.problem;
-      go.onclick = function () { startProgram(p); };
-      var rm = el('button', 'btn', 'Remove');
-      rm.disabled = !ready;
-      rm.onclick = function () {
-        ask('Remove ' + p.name + ' from this list?', p.exe, 'The program itself is not deleted.', 'Remove', function () {
-          api('POST', 'program-remove', { exe: p.exe });
-        });
-      };
-      row.appendChild(go); row.appendChild(rm);
+      if (p.source === 'added') {
+        var rm = el('button', 'btn', 'Remove');
+        rm.disabled = !ready;
+        rm.onclick = function () {
+          ask('Remove ' + p.name + ' from this list?', p.exe, 'The program itself is not deleted.', 'Remove', function () {
+            api('POST', 'program-remove', { key: p.key });
+          });
+        };
+        row.appendChild(rm);
+      }
       box.appendChild(row);
       box.appendChild(el('div', 'path', p.exe));
-      if (p.problem) box.appendChild(el('div', 'mod-alert', 'It cannot be started: ' + p.problem + '. Remove it, or add it again from where it is now.'));
+      if (p.problem) box.appendChild(el('div', 'mod-alert', 'It cannot be started: ' + p.problem + (p.source === 'added' ? '. Remove it, or add it again from where it is now.' : '.')));
     });
   }
-  // A program the player did not choose in this window (an entry another program or a person wrote into
-  // launcher-settings.json) is started only after its full path is shown and confirmed, once.
+  // A program is started only once the player has confirmed it: a program folder (installed by a drop, or copied in)
+  // the first time and again whenever any of its files changes; an added entry the player did not choose in this
+  // window (an installer or a person wrote it into launcher-settings.json) the first time.
   function startProgram(p) {
     trustThen(function (trust) {
-      if (p.confirmed) return api('POST', 'program-start', { exe: p.exe, trust: trust });
-      ask('Start this program?', p.exe, 'It was added to the settings of the loader from outside this window, not chosen here. ' +
-        'Start it only if you installed it yourself and trust it.', 'Start it', function () {
-        api('POST', 'program-start', { exe: p.exe, confirmed: true, trust: trust });
+      if (p.confirmed) return api('POST', 'program-start', { key: p.key, trust: trust });
+      var note = p.source === 'folder'
+        ? (p.changed ? 'It has changed since you last confirmed it (a new version, or files changed in its folder). ' : '') +
+          'This is a program, not a mod: it starts the game itself, with the mods switched on here, and unlike a mod it can do anything on your PC. ' +
+          'Start it only if you trust where it came from. You are asked again whenever any of its files changes.'
+        : 'It was added to the settings of the loader from outside this window, not chosen here. Start it only if you installed it yourself and trust it.';
+      // (the answer carries the stamp of what was shown: if the program changes meanwhile, the loader asks again)
+      var shown = p.stamp;
+      ask('Start ' + p.name + (p.version ? ' ' + p.version : '') + (p.author ? ' by ' + p.author : '') + '?', p.exe, note, 'Start it', function () {
+        api('POST', 'program-start', { key: p.key, confirmed: true, stamp: shown, trust: trust });
       });
     });
   }
@@ -686,7 +732,11 @@ export default String.raw`<!doctype html>
     setTimeout(function () { $('copy-cmd').textContent = 'Copy again'; }, 3000);
   }
 
-  $('play').onclick = function () { trustThen(function (trust) { api('POST', 'start', trust ? { trust: trust } : undefined); }); };
+  $('play').onclick = function () {
+    var via = st && activeProgram(st);
+    if (via) return startProgram(via);
+    trustThen(function (trust) { api('POST', 'start', trust ? { trust: trust } : undefined); });
+  };
   $('dismiss').onclick = function () { api('POST', 'dismiss'); };
   $('to-settings').onclick = function () { show('settings'); };
   $('back').onclick = function () { show('main'); };
@@ -716,10 +766,12 @@ export default String.raw`<!doctype html>
   $('refresh').onclick = function () { api('POST', 'rescan'); };
   $('open-mods').onclick = $('open-mods2').onclick = function () { api('POST', 'open', { what: 'mods' }); };
   $('open-log').onclick = function () { api('POST', 'open', { what: 'log' }); };
+  $('open-programs').onclick = function () { api('POST', 'open', { what: 'programs' }); };
 
   // Dropping onto the window. Every drop is caught, so a dropped file never replaces this page. A zip is sent as it is;
   // a folder as its files (paths starting with the folder's name). The loader checks everything before it installs.
-  var MAX_BYTES = 32 * 1024 * 1024, MAX_FILES = 5000, dragTimer = null;
+  // (as launcher/install.mjs: a whole drop up to 160 MB, for a program; the loader holds each mod to 32 MB)
+  var MAX_BYTES = 160 * 1024 * 1024, MAX_FILES = 5000, dragTimer = null;
   var canAdd = function () { return !!st && st.phase === 'ready' && !adding && !gone; };
   function base64(file) {
     return new Promise(function (ok, fail) {
@@ -741,7 +793,7 @@ export default String.raw`<!doctype html>
   function readSized(entry, size) {
     return fileOf(entry).then(function (f) {
       size.bytes += f.size;
-      if (size.bytes > MAX_BYTES) throw new Error('it is larger than 32 MB, too large to be a mod');
+      if (size.bytes > MAX_BYTES) throw new Error('it is larger than 160 MB, too large to be a mod or a program');
       return base64(f);
     });
   }

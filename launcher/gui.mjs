@@ -8,31 +8,33 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { join, relative, isAbsolute, sep } from 'node:path';
 import { scanMods, changeGroups } from '../patcher/mods.mjs';
 import { PAGE as PAGE_SCRIPTS, PAGE_BUNDLE } from '../patcher/session.mjs';
 import { findGame, gameRunning, steamExe, steamPath } from '../patcher/game.mjs';
 import { PIN, frozenPlaces } from '../patcher/frozen.mjs';
 import {
-  VERSION, PRODUCT, MODS, LOG, BASE, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
+  VERSION, PRODUCT, MODS, PROGRAMS, LOG, BASE, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
   MAX_PROGRAMS, sameExe, isConfirmed, downloaded, programName, programProblem, programRefusal, handOffRefusal, startProgram, programArgs,
   playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY, outsideMods,
   untrusted, trustKey, confirmTrusted, programSession,
 } from './core.mjs';
 import { repairPlaces, frozenStatus, copyIn, steamDownload, isAbort, openSteamConsole } from './freeze.mjs';
-import { installMods, itemsFromPage, readChosen } from './install.mjs';
+import { installMods, itemsFromPage, readChosen, MAX_BYTES } from './install.mjs';
+import { scanPrograms, programStamp, programLook } from './programs.mjs';
 import PAGE from './gui-page.mjs';
 
 const LOG_LINES = 400;
-// Request bodies: small for every action, larger for a dropped mod (its files in base64; launcher/install.mjs caps the
-// unpacked size at 32 MB).
+// Request bodies: small for every action, larger for a dropped mod or program (its files in base64, a third larger;
+// launcher/install.mjs caps the unpacked size at MAX_BYTES).
 const BODY_MAX = 65536;
-const INSTALL_BODY_MAX = 48 * 1024 * 1024;
+const INSTALL_BODY_MAX = Math.ceil(MAX_BYTES * 1.4) + 65536;
 const GONE_MS = 15000;
 // A mod's description as the window shows it: at most this many characters, without control or direction
 // characters (patcher/mods.mjs only requires it to be non-empty text).
 export const DESCRIPTION_MAX = 300;
+const ERROR_MAX = 600;
 // eslint-disable-next-line no-control-regex
 export const shortText = (s, max) => { const t = String(s).replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, ' ').trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; };
 const GONE_MS_BROWSER = 150000;
@@ -105,6 +107,57 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     problems.set(exe, { at: Date.now(), problem });
     return problem;
   };
+  // A program folder's stamp (launcher/programs.mjs: the SHA-256 of all its files), what the player's confirmation is
+  // tied to. For the window it is kept while a quick look at the folder (paths, sizes, times) finds it unchanged; a
+  // start always hashes it again (programStamp). Not looked at during a session.
+  const stamps = new Map();
+  const stampOf = dir => {
+    const known = stamps.get(dir);
+    if (phase !== 'ready' || (known && Date.now() - known.at < 5000)) return known ? known.stamp : null;
+    const look = programLook(dir);
+    if (known && look && known.look === look) { known.at = Date.now(); return known.stamp; }
+    const stamp = look ? programStamp(dir) : null;
+    stamps.set(dir, { at: Date.now(), look, stamp });
+    return stamp;
+  };
+  // The programs the window lists: program folders (launcher/programs.mjs; key: the program's id) and programs added
+  // in the settings (Add program, or an installer; key: the full path). An added entry for a file inside the programs
+  // folder is not listed: the folder's own program (or its refusal) is what counts there, with its own confirmation.
+  // `settings.playWith` is the key of the one Play starts the game through; one that is no longer listed is dropped.
+  let folderPrograms = [], brokenPrograms = [];
+  // (also through the real paths: a junction, a subst drive or a short 8.3 name can reach the same folder)
+  const within = (root, p) => { const r = relative(root, p); return !!r && r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
+  const inProgramsFolder = exe => {
+    if (within(PROGRAMS, exe)) return true;
+    try { return within(realpathSync.native(PROGRAMS), realpathSync.native(exe)); } catch { return false; }
+  };
+  const programList = () => [
+    ...folderPrograms.map(q => ({ key: q.id, source: 'folder', id: q.id, dir: q.dir, exe: q.exe, name: q.name, version: q.version, description: q.description, author: q.author, builds: q.builds })),
+    ...settings.programs.filter(p => !inProgramsFolder(p.exe))
+      .map(p => ({ key: p.exe, source: 'added', exe: p.exe, name: programName(p), entry: p, builds: null })),
+  ];
+  const rescanPrograms = () => {
+    try { ({ programs: folderPrograms, broken: brokenPrograms } = scanPrograms(PROGRAMS)); } catch (e) {
+      folderPrograms = []; brokenPrograms = [{ folder: 'programs', error: `the programs folder could not be read (${e.code || e.message})` }];
+    }
+    let changed = false;
+    if (settings.playWith && !programList().some(q => q.key === settings.playWith)) {
+      log('the program switched on is no longer listed: Play starts the game itself');
+      if (phase === 'ready') message = 'The program that was switched on is no longer listed: Play now starts the game itself.';
+      delete settings.playWith; changed = true;
+    }
+    // (confirmations of program folders that are gone are dropped: one that comes back is asked again)
+    for (const id of Object.keys(settings.confirmedPrograms ?? {})) {
+      if (!folderPrograms.some(q => q.id === id) && !brokenPrograms.some(b => b.id === id)) { delete settings.confirmedPrograms[id]; changed = true; }
+    }
+    if (changed) save();
+  };
+  rescanPrograms();
+  // (a program folder: confirmed for exactly the files there now; an added program: as before, by its path)
+  const programConfirmed = q => (q.source === 'folder'
+    ? Object.hasOwn(settings.confirmedPrograms ?? {}, q.id) && settings.confirmedPrograms[q.id] === stampOf(q.dir)
+    : isConfirmed(q.entry));
+  const programFits = (q, game) => !q.builds || (!!game && q.builds.includes(game.build));
   const gameIsRunning = () => {
     if (Date.now() - running.at > 3000) {
       try { running = { at: Date.now(), value: gameRunning() }; } catch { running = { at: Date.now(), value: false }; }
@@ -152,6 +205,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       message = 'The mods folder could not be read again. Click Refresh.';
     }
     try { freshPrograms(); problems.clear(); } catch (e) { log(`could not read the programs again after the session: ${e?.message || e}`); }
+    rescanPrograms();
     checkFrozen();
   };
   const endKind = () => (problem ? 'bad' : warning ? 'warn' : 'ok');
@@ -183,8 +237,19 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length, wording: m.patches.some(p => p.bundle === PAGE_BUNDLE), outside: outside.has(m.id), trusted: !untrusted(settings, [m]).length, trustKey: trustKey(m),
         fits: !!game && m.builds.includes(game.build), enabled: isEnabled(settings, m),
       })),
-      broken: broken.map(b => ({ folder: b.folder, error: b.error })),
-      programs: settings.programs.map(p => ({ exe: p.exe, name: programName(p), confirmed: isConfirmed(p), problem: problemOf(p.exe) })),
+      // (error texts can quote a mod's or program's own file: cut and cleaned like a description)
+      broken: broken.map(b => ({ folder: b.folder, error: shortText(b.error, ERROR_MAX) })),
+      // stamp: what the confirmation dialog shows the player is sent back with the answer, so it confirms that, not
+      // whatever is there by the time it arrives; changed: confirmed before, but the program has changed since
+      programs: programList().map(q => ({
+        key: q.key, source: q.source, exe: q.exe, name: q.name, version: q.version ?? null, author: q.author ?? null,
+        description: q.description ? shortText(q.description, DESCRIPTION_MAX) : null, builds: q.builds,
+        fits: programFits(q, game), confirmed: programConfirmed(q), problem: problemOf(q.exe),
+        stamp: q.source === 'folder' ? stampOf(q.dir) : null,
+        changed: q.source === 'folder' && Object.hasOwn(settings.confirmedPrograms ?? {}, q.id) && !programConfirmed(q),
+      })),
+      playWith: programList().some(q => q.key === settings.playWith) ? settings.playWith : null,
+      brokenPrograms: brokenPrograms.map(b => ({ folder: b.folder, error: shortText(b.error, ERROR_MAX) })),
       log: lines, logSeq,
     };
   };
@@ -317,24 +382,28 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     const busy = programBusy();
     if (busy) return busy;
     let added, kept;
-    try { ({ added, kept } = installMods(read(), MODS)); } catch (e) {
+    try { ({ added, kept } = installMods(read(), MODS, { programsDir: PROGRAMS })); } catch (e) {
       log(`could not add ${from}: ${e.message}`);
-      ({ mods, broken } = scanMods(MODS));
-      return `Could not add the mod: ${e.message}`;
+      ({ mods, broken } = scanMods(MODS)); rescanPrograms();
+      // (Windows refuses to move a folder while a program in it runs)
+      const inUse = /\b(EPERM|EBUSY|EACCES)\b/.test(e.message) ? ' A file in it is in use: close the program (and the game), then add it again.' : '';
+      return `Could not add it: ${e.message}${inUse}`;
     } finally {
       lastSeen = Date.now(); // the install blocks; polls queued meanwhile are read only after the next timer check
     }
-    ({ mods, broken } = scanMods(MODS));
+    ({ mods, broken } = scanMods(MODS)); rescanPrograms(); problems.clear();
     for (const a of added) {
-      log(`added ${a.name} ${a.version} to mods\\${a.folder}` +
+      log(`added ${a.kind === 'program' ? 'the program ' : ''}${a.name} ${a.version} to ${a.kind === 'program' ? 'programs' : 'mods'}\\${a.folder}` +
         (a.from.length ? ` (replaced folder ${a.from.join(', ')}${a.replaced.length ? `, version ${a.replaced.join(', ')}` : ''})` : ''));
     }
     if (kept) log(`the replaced copies could not be moved to the Recycle Bin; they are in ${kept}`);
     const game = current();
-    const unfit = added.filter(a => !game || !mods.find(m => m.id === a.id)?.builds.includes(game.build));
-    notice = `Added ${added.map(a => `${a.name} ${a.version}${a.replaced.length ? ` (replacing ${a.replaced.join(', ')})` : ''}`).join(', ')}.` +
+    const unfit = added.filter(a => a.kind === 'mod' && (!game || !mods.find(m => m.id === a.id)?.builds.includes(game.build)));
+    const programs = added.filter(a => a.kind === 'program');
+    notice = `Added ${added.map(a => `${a.name} ${a.version}${a.kind === 'program' ? ' (a program)' : ''}${a.replaced.length ? ` (replacing ${a.replaced.join(', ')})` : ''}`).join(', ')}.` +
       (added.some(a => a.from.length) ? (kept ? ` The previous copy is kept in ${kept}.` : ' The previous copy is in the Recycle Bin.') : '') +
-      (unfit.length ? ` ${unfit.map(a => a.name).join(', ')} ${unfit.length > 1 ? 'are' : 'is'} not made for your game version yet.` : '');
+      (unfit.length ? ` ${unfit.map(a => a.name).join(', ')} ${unfit.length > 1 ? 'are' : 'is'} not made for your game version yet.` : '') +
+      (programs.length ? ' Switch a program on in the list to play through it; the loader asks you once before it first starts it.' : '');
     return null;
   };
 
@@ -389,7 +458,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     let body = {};
     // A drop is refused before its (large) body is read while a game session runs: reading it would hold up the
     // process that serves the game.
-    if (url.pathname === '/api/install' && phase !== 'ready') {
+    if (url.pathname === '/api/install' && (phase !== 'ready' || starting)) {
       return send(200, { error: 'Mods cannot be added while the game is starting or running.', state: state() });
     }
     if (req.method === 'POST') {
@@ -397,7 +466,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       let raw = '';
       for await (const chunk of req) {
         raw += chunk;
-        if (raw.length > max) return send(413, { error: max === BODY_MAX ? 'too large' : 'What was dropped is too large to be a mod (over 32 MB).' });
+        if (raw.length > max) return send(413, { error: max === BODY_MAX ? 'too large' : `What was dropped is too large to be a mod or a program (over ${MAX_BYTES / 1024 / 1024} MB).` });
       }
       try { body = raw ? JSON.parse(raw) : {}; } catch { return send(400, { error: 'bad json' }); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) body = {};
@@ -447,8 +516,24 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         const busy = programBusy();
         if (busy) return reply(busy);
         live = findGame(settings.gameDir || null); ({ mods, broken } = scanMods(MODS));
-        freshPrograms(); problems.clear();
+        freshPrograms(); problems.clear(); rescanPrograms();
         if (!task) checkFrozen();
+        return done();
+      }
+      case 'POST /api/play-with': {
+        // (Play starts the game through this program; null: Play starts it itself. One program at a time.)
+        if (phase !== 'ready') return reply('Programs cannot be switched while the game is starting or running.');
+        const busy = programBusy();
+        if (busy) return reply(busy);
+        freshPrograms();
+        if (body.key == null) delete settings.playWith;
+        else {
+          const q = programList().find(x => x.key === body.key);
+          if (!q) return reply('No such program.');
+          settings.playWith = q.key;
+        }
+        save();
+        log(body.key == null ? 'Play starts the game itself' : `Play starts the game through ${programList().find(x => x.key === body.key).name}`);
         return done();
       }
       case 'POST /api/play': {
@@ -532,6 +617,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         if (phase !== 'ready') return reply('Programs can be added when no game session is running.');
         const problem = programProblem(file);
         if (problem) return reply(`That cannot be added: ${problem}.`);
+        if (inProgramsFolder(file)) return reply('That program is in the programs folder, so it is listed from there already (with its own program.json).');
         // Picked in the dialog: the player chose this file, so its first start needs no further confirmation, unless
         // it was downloaded from the internet (Windows does not ask when it starts this way).
         freshPrograms();
@@ -543,28 +629,56 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         if (fromInternet) delete p.confirmed; else p.confirmed = p.exe;
         save();
         if (!known) log(`program added: ${file}${fromInternet ? ' (downloaded from the internet)' : ''}`);
-        notice = (known ? `${programName(p)} is already in the list.` : `Added ${programName(p)} (${file}). Its button starts it with the mods switched on here.`) +
+        notice = (known ? `${programName(p)} is already in the list.` : `Added ${programName(p)} (${file}). Switch it on in the mods list to play through it, with the mods switched on here.`) +
           (fromInternet ? ' It was downloaded from the internet, so the loader asks you once before it first starts it.' : '');
         return done(true);
       }
       case 'POST /api/program-remove': {
         if (phase !== 'ready') return reply('Programs can be removed when no game session is running.');
         freshPrograms();
-        const i = settings.programs.findIndex(p => p.exe === body.exe);
+        if (folderPrograms.some(q => q.id === body.key)) return reply('That program is in the programs folder: delete its folder there to remove it (Settings, Open programs folder).');
+        const i = settings.programs.findIndex(p => p.exe === body.key);
         if (i < 0) return reply('No such program.');
         const [p] = settings.programs.splice(i, 1);
+        if (settings.playWith === p.exe) delete settings.playWith;
         save();
         log(`program removed from the list: ${p.exe}`);
         return done();
       }
       case 'POST /api/program-start': {
         if (phase !== 'ready') return reply('The loader is busy.');
-        freshPrograms();
-        const p = settings.programs.find(x => x.exe === body.exe);
-        if (!p) return reply('No such program.');
+        freshPrograms(); rescanPrograms(); problems.clear();
+        const q = programList().find(x => x.key === body.key);
+        if (!q) return reply('No such program.');
+        // A program folder: its files are hashed now, and that is what counts: confirmed before, or confirmed in the
+        // dialog for exactly the files it showed (body.stamp).
+        const folderStamp = q.source === 'folder' ? programStamp(q.dir) : null;
+        if (q.source === 'folder') {
+          if (!folderStamp) return reply(`${q.name} cannot be started: its folder could not be read. Drop its zip again to reinstall it.`);
+          const problemNow = programProblem(q.exe);
+          if (problemNow) return reply(`${q.name} cannot be started: ${problemNow}. Drop its zip again to reinstall it.`);
+          if (body.confirmed === true && body.stamp !== folderStamp) return reply(`${q.name} changed while you were asked: look at it again, then confirm it again.`);
+        }
+        const isKnown = q.source === 'folder' ? settings.confirmedPrograms?.[q.id] === folderStamp : isConfirmed(q.entry);
+        // (a program folder as a program entry: its own name, and confirmed when the player confirmed these very files)
+        const p = q.source === 'added' ? q.entry : { exe: q.exe, name: q.name, ...(isKnown ? { confirmed: q.exe } : {}) };
         const refusal = refuseProgram(p, body.confirmed === true);
         if (refusal) return reply(refusal);
-        if (!isConfirmed(p)) { p.confirmed = p.exe; save(); }
+        if (!programFits(q, current())) return reply(`${q.name} is not made for this game version (build ${current()?.build}): it plays build ${q.builds.join(', ')}.`);
+        if (!isConfirmed(p)) {
+          if (q.source === 'added') p.confirmed = p.exe;
+          else settings.confirmedPrograms = { ...(settings.confirmedPrograms ?? {}), [q.id]: folderStamp };
+          log(`confirmed by the player: start the program ${q.name}${q.version ? ` ${q.version}` : ''} (${q.exe})`);
+          save();
+        }
+        // Right before Windows starts it: a program folder is hashed once more, so files changed since (by anything
+        // else on the PC) are not started under this confirmation.
+        const startIt = opts => {
+          if (q.source === 'folder' && programStamp(q.dir) !== folderStamp) {
+            return Promise.resolve({ error: 'its files changed just now: look at it again, then confirm it again' });
+          }
+          return startProgram(p.exe, BASE, opts);
+        };
         const name = programName(p);
         // The frozen game: the program is given the copy's folder (--game) after the same check as Play (it checks
         // the folder again itself, and keeps its own saves for it). Mods that change code outside the game window are
@@ -597,13 +711,13 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
             const runs = new Promise(r => { running = r; });
             session = programSession({
               name, frozen: { dir: gameDir, dataDir: game.dataDir, notes: game.notes }, disk: built.disk, log,
-              start: () => startProgram(p.exe, BASE, { gameDir, written }), onStarted: running,
+              start: () => startIt({ gameDir, written }), onStarted: running,
               onProblem: () => { problem = true; }, // (shown at once, as for Play)
             });
             // Either it runs (the session goes on) or the session ended first: nothing written, or the start failed.
             const first = await Promise.race([runs.then(s => ({ started: s })), session.then(end => ({ end }))]);
             started = first.started ?? { error: first.end.error ?? 'it ended at once' };
-          } else started = await startProgram(p.exe, BASE, { gameDir });
+          } else started = await startIt({ gameDir });
         } finally { starting = false; }
         lastSeen = Date.now();
         if (started.error) {
@@ -629,7 +743,9 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         return done(true);
       }
       case 'POST /api/open': {
-        const target = body.what === 'log' ? LOG : body.what === 'mods' ? MODS : body.what === 'saves' && places ? join(places.data, 'saves') : null;
+        if (body.what === 'programs') { try { mkdirSync(PROGRAMS, { recursive: true }); } catch { /* said below */ } }
+        const target = body.what === 'log' ? LOG : body.what === 'mods' ? MODS : body.what === 'programs' ? PROGRAMS
+          : body.what === 'saves' && places ? join(places.data, 'saves') : null;
         if (!target || !existsSync(target)) return reply('Nothing to open yet.');
         const child = spawn(body.what === 'log' ? 'notepad' : 'explorer', [target], { detached: true, stdio: 'ignore' });
         child.on('error', e => log(`could not open ${target}: ${e.message}`));
@@ -725,8 +841,8 @@ async function browseFolder({ frozen = false } = {}) {
 // cancelled. The command is constant (no user input).
 async function chooseModFile() {
   const file = await powershell('Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; ' +
-    "$d.Title = 'Add a mod: choose its .zip file, or the mod.json inside its folder'; " +
-    "$d.Filter = 'Mod (.zip or mod.json)|*.zip;mod.json|All files|*.*'; " +
+    "$d.Title = 'Add a mod or a program: choose its .zip file, or the mod.json or program.json inside its folder'; " +
+    "$d.Filter = 'Mod or program (.zip, mod.json, program.json)|*.zip;mod.json;program.json|All files|*.*'; " +
     '$f = New-Object System.Windows.Forms.Form; $f.TopMost = $true; ' +
     '[Console]::OutputEncoding=[Text.Encoding]::UTF8; if ($d.ShowDialog($f) -eq "OK") { $d.FileName }');
   return file || null;

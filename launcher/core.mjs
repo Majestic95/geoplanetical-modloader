@@ -25,6 +25,8 @@ export const PRODUCT = 'Geoplanetical Mod Loader';
 // Packaged: everything sits beside the executable. Development: the repository root (mods/ is the repo's).
 export const BASE = isSea() ? dirname(process.execPath) : join(dirname(fileURLToPath(import.meta.url)), '..');
 export const MODS = join(BASE, 'mods');
+// Program folders (launcher/programs.mjs): programs such as a multiplayer launcher, listed with the mods.
+export const PROGRAMS = join(BASE, 'programs');
 const SETTINGS = join(BASE, 'launcher-settings.json');
 export const LOG = join(BASE, 'launcher.log');
 
@@ -50,12 +52,22 @@ export function makeLog(show) {
 // The settings file is the player's to edit: anything but a plain object (or a gameDir that is not text) is ignored.
 export function readSettings() {
   let s;
-  try { s = JSON.parse(readFileSync(SETTINGS, 'utf8')); } catch (e) { return { enabled: {}, programs: [], trusted: {}, ...(e.code === 'ENOENT' ? {} : { unreadable: true }) }; }
-  if (!s || typeof s !== 'object' || Array.isArray(s)) return { enabled: {}, programs: [], trusted: {}, unreadable: true };
+  try { s = JSON.parse(readFileSync(SETTINGS, 'utf8')); } catch (e) { return { enabled: {}, programs: [], trusted: {}, confirmedPrograms: {}, ...(e.code === 'ENOENT' ? {} : { unreadable: true }) }; }
+  return cleanSettings(s);
+}
+// The settings as read (cleanSettings is readSettings without the file, for tests): every field it knows kept only in
+// the shape it expects.
+export function cleanSettings(s) {
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return { enabled: {}, programs: [], trusted: {}, confirmedPrograms: {}, unreadable: true };
   if (typeof s.gameDir !== 'string') delete s.gameDir;
   if (s.play !== 'live' && s.play !== 'frozen') delete s.play;
   if (!s.enabled || typeof s.enabled !== 'object' || Array.isArray(s.enabled)) s.enabled = {};
   s.programs = cleanPrograms(s.programs);
+  // (the window's choice of a program to play through: a program folder's id or an added program's path)
+  if (typeof s.playWith !== 'string' || !s.playWith || s.playWith.length > 300) delete s.playWith;
+  // (the player's confirmation of each program folder: { <program id>: <programStamp of its folder> })
+  s.confirmedPrograms = s.confirmedPrograms && typeof s.confirmedPrograms === 'object' && !Array.isArray(s.confirmedPrograms)
+    ? Object.fromEntries(Object.entries(s.confirmedPrograms).filter(([, v]) => typeof v === 'string')) : {};
   // (a mod id and the version and patch hash confirmed, trustKey; anything else is left out)
   s.trusted = s.trusted && typeof s.trusted === 'object' && !Array.isArray(s.trusted)
     ? Object.fromEntries(Object.entries(s.trusted).filter(([, v]) => typeof v === 'string')) : {};

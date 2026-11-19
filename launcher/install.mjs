@@ -1,8 +1,9 @@
-// Installs mods into the mods folder from what a player gives the window: a mod's .zip (launcher/gui.mjs reads it from
-// a dropped file or the Add mod dialog) or a mod folder (dropped, or the folder of a chosen mod.json). One install is
-// one transaction: every file is read into memory and every mod checked with the loader's strict reader before the
-// mods folder changes, an older copy of the same mod (same id) is replaced and goes to the Recycle Bin, and a failure
-// part-way puts everything back. Nothing here runs mod code; the files are only copied.
+// Installs mods into the mods folder, and programs (launcher/programs.mjs) into the programs folder, from what a player
+// gives the window: a .zip (launcher/gui.mjs reads it from a dropped file or the Add mods dialog) or a folder (dropped,
+// or the folder of a chosen mod.json or program.json). One install is one transaction: every file is read into memory
+// and every mod and program checked with the loader's strict readers before either folder changes, an older copy of
+// the same mod or program (same id) is replaced and goes to the Recycle Bin, and a failure part-way puts everything
+// back. Nothing here runs mod or program code; the files are only copied.
 import {
   readFileSync, writeFileSync, mkdirSync, readdirSync, lstatSync, renameSync, rmSync, existsSync, statSync,
 } from 'node:fs';
@@ -11,12 +12,16 @@ import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { inflateRawSync, crc32 } from 'node:zlib';
 import { scanMods } from '../patcher/mods.mjs';
+import { scanPrograms, MAX_PROGRAM_FOLDERS } from './programs.mjs';
 
-// Far above a real mod (the largest known is under 1 MB in 80 files), low enough that a wrong file is refused quickly.
-// The file and byte limits hold for one install as a whole, however many zips or folders it takes.
-export const MAX_ZIP = 32 * 1024 * 1024;
+// A mod: far above a real one (the largest known is under 1 MB in 80 files), low enough that a wrong file is refused
+// quickly. A program (launcher/programs.mjs) can be far larger than a mod (a self-contained .exe is often near 100 MB),
+// so one install as a whole, however many zips or folders it takes, may hold up to MAX_BYTES, and each mod in it up to
+// MAX_MOD_BYTES.
+export const MAX_ZIP = 160 * 1024 * 1024;
 export const MAX_FILES = 5000;
-export const MAX_BYTES = 32 * 1024 * 1024;
+export const MAX_BYTES = 160 * 1024 * 1024;
+export const MAX_MOD_BYTES = 32 * 1024 * 1024;
 const MAX_PATH = 200;
 const MAX_ITEMS = 20;
 const MAX_MODS = 50;
@@ -134,8 +139,8 @@ export function readChosen(file) {
     if (statSync(file).size > MAX_ZIP) throw new Error(`the zip is larger than ${mb(MAX_ZIP)}`);
     return [{ name: basename(file), files: readZip(readFileSync(file)) }];
   }
-  if (basename(file).toLowerCase() === 'mod.json') return [{ name: basename(dirname(file)), files: readFolder(dirname(file)) }];
-  throw new Error('choose a mod\'s .zip file, or the mod.json inside its folder');
+  if (['mod.json', 'program.json'].includes(basename(file).toLowerCase())) return [{ name: basename(dirname(file)), files: readFolder(dirname(file)) }];
+  throw new Error('choose a mod\'s or program\'s .zip file, or the mod.json or program.json inside its folder');
 }
 
 // What the window sends for a drop (launcher/gui-page.mjs): { items: [{ name, zip } | { name, files: [{ path, data }] }] },
@@ -187,16 +192,18 @@ function recycle(dir) {
 const folderOf = dir => dir.split(/[\\/]/).pop();
 const quietRm = dir => { try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* left for later */ } };
 
-// Installs the mods found in `items` ([{ name, files: [{ path, data }] }], `name` only for messages) into `modsDir`.
-// A mod is each shallowest folder holding a mod.json, so a zip of the mod folder, of the files inside it, or of a
-// repository with the mod in a sub-folder all work, and a pack of several mods installs together. Returns
-// { added: [{ id, name, version, folder, replaced: [old versions], from: [old folders] }], kept }: `kept` is the folder
-// holding the replaced copies when they could not go to the Recycle Bin, else null. Throws an Error for the player,
-// with mods/ unchanged. `ops.rename` and `ops.discard` are for tests.
+// Installs the mods and programs found in `items` ([{ name, files: [{ path, data }] }], `name` only for messages):
+// mods into `modsDir`, programs (a folder with a program.json, launcher/programs.mjs) into `ops.programsDir`. A mod or
+// program is each shallowest folder holding a mod.json or a program.json, so a zip of the folder, of the files inside
+// it, or of a repository or pack with them in sub-folders all work, and several install together. Returns
+// { added: [{ kind: 'mod' | 'program', id, name, version, folder, replaced: [old versions], from: [old folders] }],
+// kept }: `kept` is the folder holding the replaced copies when they could not go to the Recycle Bin, else null.
+// Throws an Error for the player, with both folders unchanged. `ops.rename` and `ops.discard` are for tests.
 export function installMods(items, modsDir, ops = {}) {
   const rename = ops.rename || renameRetry;
   const discard = ops.discard || recycle;
-  // 1. Check every path, find the mods, all in memory.
+  const programsDir = ops.programsDir || null;
+  // 1. Check every path, find the mods and programs, all in memory.
   const roots = [], budget = newBudget();
   items.forEach(item => {
     const seen = new Set(), files = [];
@@ -207,35 +214,59 @@ export function installMods(items, modsDir, ops = {}) {
       seen.add(p.toLowerCase());
       files.push({ path: p, data: f.data });
     }
-    const dirs = files.filter(f => f.path.split('/').pop().toLowerCase() === 'mod.json').map(f => f.path.split('/').slice(0, -1).join('/'));
-    const under = (d, root) => root === '' || d.startsWith(`${root}/`);
-    const shallow = dirs.filter(d => !dirs.some(o => o !== d && under(d, o)));
-    if (!shallow.length) throw new Error(`${item.name}: no mod.json found; this is not a Geoplanetical Mod Loader mod`);
-    for (const root of shallow) {
-      const own = files.filter(f => under(f.path, root)).map(f => ({ path: root ? f.path.slice(root.length + 1) : f.path, data: f.data }));
-      for (const f of own) {
-        if (SHELL_FILE.test(f.path)) throw new Error(`${item.name}: ${f.path} is a shortcut or shell file; a mod has no use for one`);
-        spend(budget, f.data.length, 'what was added');
+    // (folder names compared without letter case, as Windows does: "Pack/" and "pack/" are one folder)
+    const lc = s => s.toLowerCase();
+    const dirsOf = name => files.filter(f => lc(f.path.split('/').pop()) === name).map(f => f.path.split('/').slice(0, -1).join('/'));
+    const modDirs = dirsOf('mod.json'), programDirs = dirsOf('program.json');
+    const both = modDirs.find(d => programDirs.some(o => lc(o) === lc(d)));
+    if (both !== undefined) throw new Error(`${item.name}: ${both || 'its top folder'} holds both a mod.json and a program.json; a folder is a mod or a program, not both`);
+    const dirs = [...modDirs, ...programDirs];
+    const under = (d, root) => root === '' || lc(d).startsWith(`${lc(root)}/`);
+    // (a mod inside a program's folder, or a program inside a mod's, would be taken as its files: refused, so nothing
+    // in a pack is left out without a word)
+    for (const d of dirs) {
+      const outer = dirs.find(o => lc(o) !== lc(d) && under(d, o));
+      const kindOf = x => (programDirs.some(o => lc(o) === lc(x)) ? 'program' : 'mod');
+      if (outer !== undefined && kindOf(outer) !== kindOf(d)) {
+        throw new Error(`${item.name}: ${d} (a ${kindOf(d)}) is inside ${outer || 'the top folder'} (a ${kindOf(outer)}); put mods and programs side by side, not one inside the other`);
       }
-      roots.push({ item: item.name, files: own });
+    }
+    const shallow = dirs.filter(d => !dirs.some(o => lc(o) !== lc(d) && under(d, o)));
+    if (!shallow.length) throw new Error(`${item.name}: no mod.json or program.json found; this is not a mod or a program for the Geoplanetical Mod Loader`);
+    for (const root of shallow) {
+      const kind = programDirs.some(o => lc(o) === lc(root)) ? 'program' : 'mod';
+      if (kind === 'program' && !programsDir) throw new Error(`${item.name}: it holds a program, which cannot be added here`);
+      const own = files.filter(f => under(f.path, root)).map(f => ({ path: root ? f.path.slice(root.length + 1) : f.path, data: f.data }));
+      let bytes = 0;
+      for (const f of own) {
+        if (SHELL_FILE.test(f.path)) throw new Error(`${item.name}: ${f.path} is a shortcut or shell file; a ${kind} has no use for one`);
+        spend(budget, f.data.length, 'what was added');
+        bytes += f.data.length;
+      }
+      if (kind === 'mod' && bytes > MAX_MOD_BYTES) throw new Error(`${item.name}: ${root || 'the mod'} is larger than ${mb(MAX_MOD_BYTES)}, too large to be a mod`);
+      roots.push({ item: item.name, kind, files: own });
     }
   });
-  if (roots.length > MAX_MODS) throw new Error(`more than ${MAX_MODS} mods at once`);
+  if (roots.length > MAX_MODS) throw new Error(`more than ${MAX_MODS} mods and programs at once`);
+  const modRoots = roots.filter(r => r.kind === 'mod'), programRoots = roots.filter(r => r.kind === 'program');
 
   mkdirSync(modsDir, { recursive: true });
+  // (the programs folder is made only when a program goes in, after every check: see the swap)
+  if (programRoots.length && existsSync(programsDir) && lstatSync(programsDir).isSymbolicLink()) {
+    throw new Error('the programs folder is a link to another folder: make it a folder of its own, then add the program again');
+  }
   for (const d of readdirSync(modsDir)) if (STAGING_LEFT.test(d)) quietRm(join(modsDir, d)); // an earlier install that stopped
   const staging = join(modsDir, STAGING + randomBytes(6).toString('hex'));
   const replaced = join(modsDir, REPLACED + randomBytes(6).toString('hex'));
   const done = [], moved = []; // what the swap did, undone in reverse on failure
   let plan;
   try {
-    // 2. Stage each mod and read it back with the loader's own strict reader.
-    roots.forEach((r, k) => {
-      const dir = join(staging, String(k));
+    // 2. Stage each mod and program, and read it back with the loader's own strict reader.
+    const stage = (r, dir) => {
       for (const f of r.files) {
         const to = resolve(dir, ...f.path.split('/'));
         const rel = relative(dir, to);
-        if (!rel || rel.startsWith(`..${sep}`) || rel === '..' || isAbsolute(rel)) throw new Error(`${r.item}: ${f.path} leaves the mod folder`);
+        if (!rel || rel.startsWith(`..${sep}`) || rel === '..' || isAbsolute(rel)) throw new Error(`${r.item}: ${f.path} leaves the ${r.kind}'s folder`);
         try {
           mkdirSync(dirname(to), { recursive: true });
           writeFileSync(to, f.data, { flag: 'wx' });
@@ -246,46 +277,62 @@ export function installMods(items, modsDir, ops = {}) {
           try { writeFileSync(`${to}:Zone.Identifier`, ZONE); } catch { /* not NTFS: no mark to keep */ }
         }
       }
-    });
-    const staged = scanMods(staging);
-    if (staged.broken.length) {
-      const twice = staged.broken.find(b => b.id && staged.broken.filter(o => o.id === b.id).length > 1);
+    };
+    modRoots.forEach((r, k) => stage(r, join(staging, 'm', String(k))));
+    programRoots.forEach((r, k) => stage(r, join(staging, 'p', String(k))));
+    // (a broken one names its files by full path: shown relative to it instead of the work folder)
+    const refuse = (list, kind, root, b) => {
+      const twice = list.find(o => o.id && list.filter(x => x.id === o.id).length > 1);
       if (twice) {
-        const from = staged.broken.filter(o => o.id === twice.id).map(o => roots[Number(o.folder)].item);
-        throw new Error(`the mod "${twice.id}" is in what was added more than once (${[...new Set(from)].join(', ')}); add one copy`);
+        const from = list.filter(o => o.id === twice.id).map(o => root[Number(o.folder)].item);
+        throw new Error(`the ${kind} "${twice.id}" is in what was added more than once (${[...new Set(from)].join(', ')}); add one copy`);
       }
-      // The loader names files by their full path: show them relative to the mod instead of the work folder.
-      const b = staged.broken[0], r = roots[Number(b.folder)], at = join(staging, b.folder);
+      const r = root[Number(b.folder)], at = join(staging, kind === 'mod' ? 'm' : 'p', b.folder);
       throw new Error(`${r.item}: ${b.error.split(at + sep).join('').split(at).join(r.item)}`);
-    }
+    };
+    const staged = scanMods(join(staging, 'm'));
+    if (staged.broken.length) refuse(staged.broken, 'mod', modRoots, staged.broken[0]);
+    const stagedPrograms = scanPrograms(join(staging, 'p'));
+    if (stagedPrograms.broken.length) refuse(stagedPrograms.broken, 'program', programRoots, stagedPrograms.broken[0]);
 
-    // 3. Plan: each mod replaces every folder holding the same mod id, and goes in the old folder's place (or a folder
-    // named after its id). A folder name already taken by anything else stops the install before any change.
-    const now = scanMods(modsDir);
-    plan = staged.mods.map(m => {
-      const old = [...new Set([...now.mods.filter(o => o.id === m.id).map(o => folderOf(o.dir)), ...now.broken.filter(b => b.id === m.id).map(b => b.folder)])];
+    // 3. Plan: each mod (program) replaces every folder holding the same id, and goes in the old folder's place (or a
+    // folder named after its id). A folder name already taken by anything else stops the install before any change.
+    const planFor = (kind, list, base, now) => list.map(m => {
+      const old = [...new Set([...now.found.filter(o => o.id === m.id).map(o => folderOf(o.dir)), ...now.broken.filter(b => b.id === m.id).map(b => b.folder)])];
       const target = old.length === 1 ? old[0] : m.id;
       if (DEVICE.test(target)) throw new Error(`${m.name}: its id "${m.id}" is a name Windows keeps for devices and cannot be a folder name`);
-      if (existsSync(join(modsDir, target)) && !old.some(o => o.toLowerCase() === target.toLowerCase())) {
-        throw new Error(`the mods folder already has a folder named "${target}" holding something else: rename or remove it, then add ${m.name} again`);
+      if (existsSync(join(base, target)) && !old.some(o => o.toLowerCase() === target.toLowerCase())) {
+        throw new Error(`the ${kind}s folder already has a folder named "${target}" holding something else: rename or remove it, then add ${m.name} again`);
       }
-      return { m, old, target, versions: now.mods.filter(o => o.id === m.id).map(o => o.version) };
+      return { kind, base, m, old, target, versions: now.found.filter(o => o.id === m.id).map(o => o.version) };
     });
-    const targets = plan.map(p => p.target.toLowerCase());
-    const clash = plan.find(p => targets.filter(t => t === p.target.toLowerCase()).length > 1 ||
-      plan.some(q => q !== p && q.old.some(o => o.toLowerCase() === p.target.toLowerCase())));
-    if (clash) throw new Error(`two of the mods being added would use the folder "${clash.target}"; add them one at a time`);
+    const nowMods = scanMods(modsDir);
+    plan = planFor('mod', staged.mods, modsDir, { found: nowMods.mods, broken: nowMods.broken });
+    if (programRoots.length) {
+      const nowPrograms = scanPrograms(programsDir);
+      // (the window lists at most MAX_PROGRAM_FOLDERS: one more would be added only to be refused)
+      const after = new Set([...nowPrograms.programs.map(p => p.id), ...stagedPrograms.programs.map(p => p.id)]);
+      if (after.size > MAX_PROGRAM_FOLDERS) throw new Error(`at most ${MAX_PROGRAM_FOLDERS} programs: delete one from the programs folder first`);
+      plan.push(...planFor('program', stagedPrograms.programs, programsDir, { found: nowPrograms.programs, broken: nowPrograms.broken }));
+    }
+    for (const kind of ['mod', 'program']) {
+      const same = plan.filter(p => p.kind === kind), targets = same.map(p => p.target.toLowerCase());
+      const clash = same.find(p => targets.filter(t => t === p.target.toLowerCase()).length > 1 ||
+        same.some(q => q !== p && q.old.some(o => o.toLowerCase() === p.target.toLowerCase())));
+      if (clash) throw new Error(`two of the ${kind}s being added would use the folder "${clash.target}"; add them one at a time`);
+    }
 
     // 4. Swap: old copies aside (each under its own name, for the Recycle Bin), new ones in. Undone in reverse if
     // any step fails.
     mkdirSync(replaced);
+    if (programRoots.length) mkdirSync(programsDir, { recursive: true });
     plan.forEach((p, i) => {
       p.old.forEach((o, j) => {
         const to = join(replaced, `${i}-${j}`, o);
         mkdirSync(dirname(to));
-        rename(join(modsDir, o), to); moved.push([join(modsDir, o), to]);
+        rename(join(p.base, o), to); moved.push([join(p.base, o), to]);
       });
-      rename(p.m.dir, join(modsDir, p.target)); done.push([p.m.dir, join(modsDir, p.target)]);
+      rename(p.m.dir, join(p.base, p.target)); done.push([p.m.dir, join(p.base, p.target)]);
     });
   } catch (e) {
     const newLeft = [], oldLeft = [];
@@ -294,10 +341,10 @@ export function installMods(items, modsDir, ops = {}) {
     quietRm(staging);
     if (!oldLeft.length) quietRm(replaced); // every previous copy is back: only empty work folders remain there
     if (!newLeft.length && !oldLeft.length) throw e;
-    throw new Error(`${e.message}. The mods folder could not be put fully back:` +
+    throw new Error(`${e.message}. The ${programRoots.length ? 'mods and programs folders' : 'mods folder'} could not be put fully back:` +
       (newLeft.length ? ` remove the new copies ${newLeft.join(', ')}` : '') +
       (newLeft.length && oldLeft.length ? ', then' : '') +
-      (oldLeft.length ? ` move the previous copies from ${replaced} back into the mods folder` : '') + '.');
+      (oldLeft.length ? ` move the previous copies from ${replaced} back where they were` : '') + '.');
   }
   // 5. Done: the replaced copies go to the Recycle Bin. Clean-up never changes the outcome.
   quietRm(staging);
@@ -305,7 +352,7 @@ export function installMods(items, modsDir, ops = {}) {
   for (const [, to] of moved) if (!discard(to)) kept = replaced;
   if (!kept) quietRm(replaced);
   return {
-    added: plan.map(p => ({ id: p.m.id, name: p.m.name, version: p.m.version, folder: p.target, replaced: p.versions, from: p.old })),
+    added: plan.map(p => ({ kind: p.kind, id: p.m.id, name: p.m.name, version: p.m.version, folder: p.target, replaced: p.versions, from: p.old })),
     kept,
   };
 }

@@ -2,14 +2,15 @@
 // is refused, the hand-off, the argument a program is given, and a start that fails. No program is started (a start
 // that works opens a window).
 // Usage: node launcher/test-programs.mjs
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, statSync, utimesSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  cleanPrograms, isConfirmed, downloaded, programName, programProblem, programRefusal, handOffRefusal, quoteArg, startProgram, MAX_PROGRAMS, HANDOFF_MS,
+  cleanPrograms, cleanSettings, isConfirmed, downloaded, programName, programProblem, programRefusal, handOffRefusal, quoteArg, startProgram, MAX_PROGRAMS, HANDOFF_MS,
 } from './core.mjs';
+import { readProgram, scanPrograms, programStamp } from './programs.mjs';
 
 let failed = 0;
 async function expect(name, fn, check) {
@@ -130,6 +131,64 @@ try {
 
   // A start Windows refuses is reported as text, and nothing is left running.
   await expect('start: a failed start is reported', () => startProgram(join(dir, 'gone.exe'), dir), r => typeof r.error === 'string' && r.error.length > 0 && !('pid' in r));
+
+  // Program folders (launcher/programs.mjs): program.json read strictly, the .exe inside the folder.
+  const programs = join(dir, 'programs');
+  const place = (folder, json, exe = 'Multi.exe') => {
+    mkdirSync(join(programs, folder), { recursive: true });
+    writeFileSync(join(programs, folder, 'program.json'), typeof json === 'string' ? json : JSON.stringify(json));
+    if (exe) writeFileSync(join(programs, folder, exe), 'MZ');
+    return join(programs, folder);
+  };
+  const good = (id, extra = {}) => ({ format: 1, id, name: 'Multi', version: '1.0', description: 'Plays with friends.', exe: 'Multi.exe', ...extra });
+  await expect('program folder: a good program.json reads, the .exe as a full path', () => readProgram(place('ok', good('ok', { author: 'A', builds: ['26734764'] }))),
+    p => p.id === 'ok' && p.exe === join(programs, 'ok', 'Multi.exe') && p.author === 'A' && p.builds.join() === '26734764');
+  for (const [what, json, re] of [
+    ['an unknown field', good('u', { run: 'x' }), /unknown field "run"/],
+    ['a missing field', (({ description, ...rest }) => rest)(good('m')), /missing field "description"/],
+    ['a newer format', good('n', { format: 2, extra: 1 }), /needs a newer loader/],
+    ['an id that is not one', good('Not An Id'), /id must be text/],
+    ['a name with a direction character', good('d', { name: `Evil${String.fromCharCode(0x202e)}exe` }), /plain text/],
+    ['an exe outside the folder', good('o', { exe: '../Multi.exe' }), /exe must be/],
+    ['an exe that is not .exe', good('x', { exe: 'run.bat' }), /exe must be/],
+    ['builds that are not build ids', good('b', { builds: [26734764] }), /builds must be/],
+    ['text that is not JSON', '{ nope', /program\.json/],
+  ]) {
+    await expect(`program folder: refused: ${what}`, () => { try { readProgram(place(`bad-${what.replace(/\W+/g, '-')}`, json)); return null; } catch (e) { return e.message; } }, m => re.test(m || ''));
+  }
+  await expect('program folder: refused: its .exe is missing', () => { try { readProgram(place('noexe', good('noexe'), null)); return null; } catch (e) { return e.message; } }, m => /not in the program's folder/.test(m || ''));
+  await expect('program folders: the good ones listed, the bad ones broken with their folder', () => scanPrograms(programs),
+    r => r.programs.map(p => p.id).join() === 'ok' && r.broken.some(b => b.folder === 'noexe') && r.broken.every(b => typeof b.error === 'string'));
+  place('ok-copy', good('ok'));
+  await expect('program folders: two folders with one id are both refused', () => scanPrograms(programs),
+    r => !r.programs.some(p => p.id === 'ok') && r.broken.filter(b => b.id === 'ok').length === 2);
+  await expect('program folders: no programs folder, no programs', () => scanPrograms(join(dir, 'none')), r => !r.programs.length && !r.broken.length);
+  // The stamp: a SHA-256 of the whole folder, so any change is asked again, whatever its size and time.
+  const okDir = join(programs, 'ok'), okExe = join(okDir, 'Multi.exe');
+  const before = programStamp(okDir);
+  await expect('stamp: the same files, the same stamp', () => programStamp(okDir), s => !!before && s === before);
+  const { mtime } = statSync(okExe);
+  writeFileSync(okExe, 'MX'); utimesSync(okExe, mtime, mtime); // (same size, same time, other bytes)
+  await expect('stamp: other bytes of the same size and time give another stamp', () => programStamp(okDir), s => !!s && s !== before);
+  writeFileSync(okExe, 'MZ'); utimesSync(okExe, mtime, mtime);
+  await expect('stamp: back to the same bytes, back to the same stamp', () => programStamp(okDir), s => s === before);
+  writeFileSync(join(okDir, 'helper.dll'), 'code beside the exe');
+  await expect('stamp: a file added beside the .exe gives another stamp', () => programStamp(okDir), s => !!s && s !== before);
+  await expect('stamp: a missing folder has none', () => programStamp(join(programs, 'gone')), s => s === null);
+  if (process.platform === 'win32') {
+    const target = join(dir, 'elsewhere'); mkdirSync(target, { recursive: true }); writeFileSync(join(target, 'x.dll'), 'x');
+    const r = spawnSync('cmd', ['/c', 'mklink', '/J', join(okDir, 'lib'), target], { encoding: 'utf8' });
+    if (r.status === 0) {
+      await expect('program folder: a link inside it is refused', () => { try { readProgram(okDir); return null; } catch (e) { return e.message; } }, m => /is a link/.test(m || ''));
+      rmSync(join(okDir, 'lib'), { recursive: false, force: true });
+    } else console.log('skip junction check (mklink failed)');
+  }
+
+  // Settings: the loader's own program keys kept only in the shape it writes.
+  await expect('settings: playWith kept as text, dropped otherwise', () => [cleanSettings({ playWith: 'mp' }).playWith, cleanSettings({ playWith: 7 }).playWith, cleanSettings({ playWith: 'x'.repeat(301) }).playWith, cleanSettings({ playWith: '' }).playWith],
+    r => r[0] === 'mp' && r.slice(1).every(v => v === undefined));
+  await expect('settings: confirmedPrograms keeps text entries only', () => [cleanSettings({ confirmedPrograms: { a: 'sha256:1', b: 2, c: null } }).confirmedPrograms, cleanSettings({ confirmedPrograms: [1] }).confirmedPrograms, cleanSettings({}).confirmedPrograms],
+    r => JSON.stringify(r[0]) === '{"a":"sha256:1"}' && JSON.stringify(r[1]) === '{}' && JSON.stringify(r[2]) === '{}');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

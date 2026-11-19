@@ -88,16 +88,18 @@ stopped first, the next time the loader opens). So:
 PLAYING THROUGH ANOTHER PROGRAM (FOR EXAMPLE MULTIPLAYER)
 --------------------------------------------------------
 Some programs, such as a multiplayer launcher, start the game with the mods switched on in this loader.
-1. Download and unzip the program anywhere, as its author explains.
-2. In the loader's window, open "Settings"; under "Programs", click "Add program..." and choose the
-   program's .exe file.
-3. Switch on the mods you want, then click "Play with <the program's name>" beside "Play". The program
-   opens its own window and starts the game; follow what it says there. The loader does not start the
-   game itself.
-Add only programs you trust: unlike a mod, a program can do anything on your PC. If a program added itself
-to the loader, or was downloaded from the internet, the loader shows its full path and asks you once before
-starting it. "Remove" takes a program
-off the list; it does not delete the program.
+1. Download the program's .zip file and drop it onto the loader's window, like a mod. The loader puts it
+   in the "programs" folder here and lists it with the mods, marked "Program". (A pack may already have it
+   there.)
+2. Switch it on in the list (one program at a time), and switch on the mods you want. The big button now
+   reads "Play with <the program's name>".
+3. Click it. The program opens its own window and starts the game; follow what it says there. The loader
+   does not start the game itself.
+Add only programs you trust: unlike a mod, a program can do anything on your PC. Before a program first
+starts, and again whenever it changes (a new version), the loader shows its full path and asks you to
+confirm it. To remove such a program, delete its folder in "programs" ("Settings", "Open programs folder").
+A program that came without a program.json can still be added: "Settings", "Programs", "Add program..."
+and choose its .exe file; "Remove" there takes it off the list (it does not delete the program).
 
 
 SAVES

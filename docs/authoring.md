@@ -189,10 +189,52 @@ mod as not made for that game version until you port it:
 ## Programs
 
 A **program** is a separate application that starts the game with the loader's mods, such as a multiplayer launcher.
-It is not a mod and is not installed into the `mods` folder: the player adds it in the loader's **Settings** with **Add
-program...** (choosing its `.exe` file where they unzipped it), and the window then shows a **Play with** button
-named after it, beside **Play**. The loader contains no code for any particular program; everything a program gets from the loader
-is listed here.
+It is not a mod and never lives in the `mods` folder. The window lists it with the mods, with a **Program** label and
+a switch: switched on (one program at a time), the main button reads **Play with** and its name, and starts the game
+through it. The loader contains no code for any particular program; everything a program gets from the loader is
+listed here.
+
+**Shipping your program (loader 0.10.0 and later).** Ship it as a folder with a `program.json` beside its `.exe`, in a
+zip. The player drops the zip on the loader's window, as for a mod, and the loader installs the folder into its
+`programs` folder (beside `mods`; a newer version with the same id replaces the older one). A pack can also ship it
+already in place, as `programs\<folder>\` beside `mods\`.
+
+```json
+{
+  "format": 1,
+  "id": "my-program",
+  "name": "My Program",
+  "version": "1.2.0",
+  "description": "What it does, in a sentence or two.",
+  "exe": "MyProgram.exe",
+  "builds": ["26734764"]
+}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `format` | yes | `1`. A loader that reads only older formats says it needs a newer loader. |
+| `id` | yes | As a mod id: lower-case letters, digits and `-`, at most 64 characters. Unique among the programs. |
+| `name` | yes | Shown to players, at most 60 characters, no line breaks or direction characters. |
+| `version` | yes | Shown to players, at most 40 characters. |
+| `description` | yes | Shown under the name, at most 1000 characters (the window shows up to 300). |
+| `exe` | yes | The program's `.exe`, a plain path inside its folder (`MyProgram.exe`, `bin/MyProgram.exe`). |
+| `author` | no | Shown beside the version, at most 60 characters. |
+| `builds` | no | The game builds it plays. Without it the loader leaves that check to the program. |
+
+Unknown fields are refused, as in `mod.json`. Two folders with the same id are both refused (delete the older copy),
+and at most 8 program folders are listed. A whole drop may be up to 160 MB (each mod in it still at most 32 MB).
+Before the first start the loader shows the `.exe`'s full path and asks the player to confirm it, and asks again
+whenever any file in the program's folder changes (a new version, or a file swapped by hand): the confirmation is
+tied to a SHA-256 of the whole folder, checked again right before each start. A program folder may hold at most 5000
+files and 512 MB, and no links (a folder in `programs` that is a link to another folder is refused too). A mod
+inside a program's folder, or a program inside a mod's, is refused at install: put them side by side. Keep your
+program's own data (logs, settings, caches) outside its folder, for example under `%LOCALAPPDATA%`: a file written
+into the folder changes it, and the player is asked again before the next start.
+
+**A program without a `program.json`** can still be added: the player clicks **Add program...** in the loader's
+**Settings** and chooses its `.exe`, or an installer adds an entry to the settings (below). It is listed and switched
+on the same way.
 
 **How the loader starts it.** As
 
@@ -243,7 +285,8 @@ itself:
 - `launcher-settings.json`: the player's switches. A mod is off only when `enabled[<mod id>]` is `false`; a missing
   or unreadable file switches nothing off. Read it; never write it. Its `trusted` field (`{ <mod id>: <version and hash> }`) is
   the loader's record of the mods (each version and its patches) the player confirmed playing with the same access to the PC as any
-  program; an installer must not write or clear it either.
+  program; an installer must not write or clear it either. Its `playWith` (the program the player switched on) and
+  `confirmedPrograms` (a SHA-256 of each program folder the player confirmed) fields are the loader's too.
 
 **When the loader refuses.** Before it starts a program, the loader checks what it checks before its own Play: that
 the game was found and is not being updated by Steam (for the frozen game: that it is set up, matches its build and

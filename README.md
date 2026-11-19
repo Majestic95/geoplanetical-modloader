@@ -23,9 +23,11 @@ Not affiliated with the developers of Geoplanetical.
    click **Add mods...**. The loader checks the mod, adds it to its `mods` folder and replaces an older version of
    the same mod.
 4. Switch mods on or off and click **Play**. When the game closes, the loader is ready again: **Play again**.
-5. To play the same mods through another program, such as a multiplayer launcher, open **Settings**, click **Add
-   program...** once and choose its `.exe`; its **Play with** button beside **Play** then starts it with the mods
-   switched on in the loader. **Settings** is also where you choose the live Steam game instead of the frozen one.
+5. To play the same mods through another program, such as a multiplayer launcher, drop its zip on the window like a
+   mod: it is listed with the mods, marked **Program**. Switch it on, and the main button becomes **Play with** and
+   its name: it starts the program, which starts the game with the mods switched on in the loader. The loader asks
+   you once before a program first starts, and again when it changes. **Settings** is where you choose the live Steam
+   game instead of the frozen one.
 
 The included `README.txt` covers saves, updates and what to do when something goes wrong.
 
