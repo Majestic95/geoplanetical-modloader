@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.0 (not released yet)
+## 0.10.0 (2026-11-19)
 
 - **A cleaner window.** The main view shows one line for the game (ready, not set up, older, being set up), then
   the mods: each with its switch, its version and its `description` from `mod.json` (shown for the first time, up to 300 characters), what
@@ -36,7 +36,7 @@
   own: `playWith`, `confirmedPrograms`.
 - No change to the mod format.
 
-## 0.9.0 (not released yet)
+## 0.9.0 (not released on its own; first released in 0.10.0)
 
 - **The frozen game moves to game 1.1.5 (build `26734764`), the version with Mars.** It replaces 1.1.0 (`26519199`):
   the window shows the copy as an older version until the new one is in place, by the same three ways as before (copy
