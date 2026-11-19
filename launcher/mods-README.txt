@@ -1,7 +1,7 @@
 MODS FOLDER
 ===========
 
-The easiest way to add a mod is to drop its .zip file onto the loader's window, or to click "Add mod...":
+The easiest way to add a mod is to drop its .zip file onto the loader's window, or to click "Add mods...":
 the loader checks it, puts it here and replaces an older version of the same mod.
 
 To add a mod by hand, put it in its own folder here, as it came in the mod's download. A mod folder holds a

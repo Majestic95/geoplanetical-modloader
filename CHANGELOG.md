@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.10.0 (not released yet)
+
+- **A cleaner window.** The main view shows one line for the game (ready, not set up, older, being set up), then
+  the mods: each with its switch, its version and its `description` from `mod.json` (shown for the first time, up to 300 characters), what
+  stops it from playing right under it, and a **Details** link for everything else (what it changes, page scripts,
+  wording, requirements), closed by default. **Play** sits at the bottom, with a **Play with** button for each added
+  program beside it. Everything used less often moved to **Settings**: which game to play (frozen or Steam), the
+  frozen game (get it again, its saves), the Steam game's folder, programs (Add program, Remove), the mods folder,
+  the log.
+- **First-start setup.** When the frozen game is chosen and missing, older or broken, the window opens on a setup
+  step that says what the frozen game is and asks before anything happens: "Get game 1.1.5 from Steam now?", with
+  the size, the free space needed and the player's part (one paste). On yes, it shows Steam's download as four
+  steps (console opens, paste, Steam downloads, the loader copies and checks), the command with **Copy again** and
+  **Open Steam's console again**, and progress. "I already have game 1.1.5" covers copying the Steam game (it names
+  Steam's Betas page, where Steam may offer that version) or a folder. A second step invites the player to drop
+  their first mods. **Settings**, **Run setup again** brings it back. Nothing is downloaded or copied without a click,
+  as before.
+- **Play again.** When a session ends (the game closed, a dry run, a program's session), the loader is ready again
+  instead of ending on a "session over" screen that needed a restart: the result stays in a banner (green, amber or red, as before) until the next
+  start or until the player dismisses it, and the mods folder, the Steam game, the programs and the frozen game are
+  read again. Each check of the frozen game (after a session, Refresh, setting it up) now marks it as being checked, and Play and a program's start wait until it is done.
+- Installing mods: the player README and the README say plainly to download a mod's `.zip` from its author's page
+  and drop it on the window, without unzipping it. No mod is named or linked by the loader.
+- No change to the mod format, the settings file or the programs contract.
+
 ## 0.9.0 (not released yet)
 
 - **The frozen game moves to game 1.1.5 (build `26734764`), the version with Mars.** It replaces 1.1.0 (`26519199`):

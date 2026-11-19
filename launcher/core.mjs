@@ -20,7 +20,7 @@ import { PIN, checkFolder, checkProblem, copySavesOnce, steamRunning, errorCode 
 import { PAGE, PAGE_BUNDLE } from '../patcher/session.mjs';
 import { settleCopy, writeBundles, restoreBundles, noteWrap, readNotes, noteJudge, newNonce } from '../patcher/copy-bundles.mjs';
 
-export const VERSION = '0.9.0';
+export const VERSION = '0.10.0';
 export const PRODUCT = 'Geoplanetical Mod Loader';
 // Packaged: everything sits beside the executable. Development: the repository root (mods/ is the repo's).
 export const BASE = isSea() ? dirname(process.execPath) : join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -309,7 +309,9 @@ export function launchBlocker(settings, game) {
   return null;
 }
 
-export const FROZEN_NOT_READY = 'The frozen game is not set up yet: get it first (Frozen game, above), or choose the live Steam game.';
+// Where the window offers to get the frozen game (the text menu names its own key instead).
+export const FROZEN_WHERE = '(Settings, then Get it)';
+export const FROZEN_NOT_READY = `The frozen game is not set up yet: get it first ${FROZEN_WHERE}, or choose the live Steam game.`;
 
 // Right before the frozen copy starts (Play, or a program given --game), in this order: for the loader's own Play
 // (`saves`), the Steam game's saves are copied into the copy's saves the first time; Steam must run (the game started
@@ -344,7 +346,7 @@ export async function prepareFrozen(game, log, { saves = true, steam = true, inU
   const r = await checkFolder(game.dir);
   if (!r.ok) {
     log(`frozen copy check failed: ${r.reason}${r.code ? ` (${r.code})` : ''}`);
-    return { error: `${checkProblem(r, 'The frozen game')} Get it again (Frozen game, above).` };
+    return { error: `${checkProblem(r, 'The frozen game')} Get it again ${FROZEN_WHERE}.` };
   }
   log(`frozen copy checked: build ${PIN.build} (game ${PIN.version})`);
   return { dir: r.dir };
@@ -370,7 +372,7 @@ export function buildMods(game, chosen, log, { inUse = gameRunning } = {}) {
       const s = settleCopy(game.dir, { log, inUse });
       if (s.state === 'in-use') return { error: 'Geoplanetical is running. Close it, then press Play again.' };
       if (s.refused.length) {
-        return { error: `The frozen game's own ${s.refused.join(', ')} could not be put back: the copy the loader kept of it is damaged. Get the frozen game again (Frozen game, above).` };
+        return { error: `The frozen game's own ${s.refused.join(', ')} could not be put back: the copy the loader kept of it is damaged. Get the frozen game again ${FROZEN_WHERE}.` };
       }
     } catch (e) {
       log(`could not put the frozen game's own files back: ${errorCode(e)}`);
@@ -489,7 +491,7 @@ export function copySession({ frozen, disk, log, noted, inUse = gameRunning, eve
 }
 
 // What finish() leaves for the player to know, as sentences to add to the session's end message.
-const afterCopy = a => (a?.putBackLater ? ' The frozen game\'s own files could not be put back yet: the loader does it the next time it opens.' : '') +
+const afterCopy = a => (a?.putBackLater ? ' The frozen game\'s own files could not be put back yet: the loader does it once the game has closed (Refresh, or the next start).' : '') +
   (a?.damaged ? ` The frozen game's own ${a.damaged.join(', ')} could not be put back: the copy the loader kept of it is damaged. Get the frozen game again before you play it.` : '');
 
 // Until the program has exited (by its process id; when Windows gave none: until the game has run and closed) and no

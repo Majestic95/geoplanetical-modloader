@@ -9,35 +9,41 @@ Single player only.
 WHAT YOU NEED
 -------------
 - Windows, Steam, and Geoplanetical bought on Steam.
-- About 5 GB of free space for the frozen game (below). To download it with Steam, about 4 GB more on Steam's
-  drive (so about 9 GB if Steam and the loader share a drive); Steam's download is removed once copied.
+- About 5 GB of free space for the frozen game (below), on the drive of your Windows user folder (usually C:,
+  where %LOCALAPPDATA% is). To download it with Steam, about 4 GB more on Steam's drive (so about 9 GB if Steam
+  is on that same drive); Steam's download is removed once copied.
 
 
 THE FROZEN GAME
 ---------------
 Steam updates Geoplanetical often, and every update used to stop the mods until their authors caught up.
 So the loader plays one version of the game (shown in its window), from its own copy of it, which Steam
-never updates: the frozen game. Your mods are made for that version. Set it up once, in the loader's window,
-in one of these ways:
-- "Copy from your Steam game": possible while your Steam game is that same version.
-- "Download with Steam": the loader opens Steam's console and copies a command; click in the console,
-  press Ctrl+V, then Enter. Steam downloads that version of the game (from your own account), and the
-  loader moves it into its folder when Steam is done.
-- "Copy from a folder...": a copy of that version you already have.
+never updates: the frozen game. Your mods are made for that version. The first time you start the loader,
+it offers to set it up, and does nothing before you say yes:
+- "Yes, get it with Steam": the loader opens Steam's console and copies a command; click the box at the
+  very bottom of the console, press Ctrl+V, then Enter. Steam downloads that version of the game (from
+  your own account), and the loader copies it into its folder when Steam is done. The window shows each
+  step as it happens.
+- "I already have game ...": copy it from your Steam game while that is the same version, or from a
+  folder holding a copy of that version. Steam may offer that version for your Steam game: right-click
+  Geoplanetical in Steam, Properties, then Betas (called Game Versions & Betas in newer Steam).
 The loader checks every copy before it uses it. It lives in
-%LOCALAPPDATA%\GeoplaneticalModLauncher\game. When a new loader version plays a newer game version, get
-it the same way; the new copy replaces the old one.
-You can also choose "Live Steam game" in the window: then the loader starts your normal Steam game, and
-a mod plays only if it is made for that game's current version.
+%LOCALAPPDATA%\GeoplaneticalModLauncher\game. When a new loader version plays a newer game version, the
+window offers to get it the same way; the new copy replaces the old one. "Settings", then "Get it" (or
+"Run setup again") brings the setup back any time.
+In "Settings" you can also choose the Steam game instead: then the loader starts your normal Steam game,
+and a mod plays only if it is made for that game's current version.
 
 
 INSTALLING MODS
 ---------------
 1. Unzip this folder anywhere (for example your Desktop). Keep the files together.
-2. Start GeoplaneticalModLoader.exe and drop each mod's .zip file (or its unzipped folder) onto the loader's
-   window, or click "Add mod..." and choose the zip. The loader checks the mod before adding it and puts it in
-   the "mods" folder here. Adding a new version of a mod replaces the old one (which goes to the Recycle Bin);
-   its switch stays as you left it.
+2. Download each mod's .zip file from its author's page (on GitHub: the mod's "Releases" page, under
+   "Assets"). You do not need to unzip it.
+3. Start GeoplaneticalModLoader.exe and drag each mod's .zip file (or its unzipped folder) from your
+   Downloads folder onto the loader's window, or click "Add mods..." and choose the zip. You can drop several
+   at once. The loader checks each mod before adding it and puts it in the "mods" folder here. Adding a new
+   version of a mod replaces the old one (which goes to the Recycle Bin); its switch stays as you left it.
    You can also unzip a mod into the "mods" folder yourself (see mods\README.txt) and click "Refresh".
 
 
@@ -46,14 +52,17 @@ PLAYING
 1. Double-click GeoplaneticalModLoader.exe.
    Windows may warn that the program is from an unknown publisher (it is not code-signed). Choose
    "More info" and then "Run anyway". Some antivirus programs may ask too.
-2. The loader opens in its own window. It shows your game, the mods it found, who made each one and
-   what each changes. Use the switch beside a mod to turn it on or off, then click "Play with mods".
+2. The loader opens in its own window. It shows your game and the mods it found, with what each does
+   ("Details" lists every change). Use the switch beside a mod to turn it on or off, then click "Play".
 3. The game starts (the frozen game needs Steam running and signed in). You can minimise the loader
    window while you play. If you close it, the loader keeps the mods active in the background and closes
    itself after you quit the game; leave it open to see its end-of-session report. If the window ever
    shows a red warning during play, the mods are not active: quit the game without saving and send the
    mod's author launcher.log.
-   "Open log" shows what it did; "Quit" closes it (do not quit while the game is running).
+4. When the game closes, the window says how the session went and is ready again: change the mods if you
+   like and click "Play again".
+   "Details (log)" and "Settings", "Open log" show what it did; "Quit" closes it (do not quit while the
+   game is running).
 
 What the loader does: it reads the game's own code, applies the mods' changes as the game starts (in
 memory, or for the simulation in the frozen game's folder: see below), and starts the game. Without
@@ -80,9 +89,11 @@ PLAYING THROUGH ANOTHER PROGRAM (FOR EXAMPLE MULTIPLAYER)
 --------------------------------------------------------
 Some programs, such as a multiplayer launcher, start the game with the mods switched on in this loader.
 1. Download and unzip the program anywhere, as its author explains.
-2. In the loader's window, under "Programs", click "Add program..." and choose the program's .exe file.
-3. Switch on the mods you want, then click "Play with <the program's name>". The program opens its own
-   window and starts the game; follow what it says there. The loader does not start the game itself.
+2. In the loader's window, open "Settings"; under "Programs", click "Add program..." and choose the
+   program's .exe file.
+3. Switch on the mods you want, then click "Play with <the program's name>" beside "Play". The program
+   opens its own window and starts the game; follow what it says there. The loader does not start the
+   game itself.
 Add only programs you trust: unlike a mod, a program can do anything on your PC. If a program added itself
 to the loader, or was downloaded from the internet, the loader shows its full path and asks you once before
 starting it. "Remove" takes a program
@@ -93,7 +104,7 @@ SAVES
 -----
 - The frozen game keeps its own saves, apart from your Steam game's. The first time you play it, your
   Steam saves are copied into it; after that the two save lists are separate. Steam Cloud does NOT back
-  up the frozen game's saves: "Open its saves" in the window shows where they are
+  up the frozen game's saves: "Settings", "Open its saves" shows where they are
   (%LOCALAPPDATA%\GeoplaneticalModLauncher\game-data\saves), if you want to back them up yourself.
 - When a loader release moves the frozen game to a new game version, the loader no longer starts the old
   version, and games saved in it may not work in the new one: they stay in the save list but may not load,
@@ -121,7 +132,7 @@ WHEN SOMETHING GOES WRONG
 
 IF THE GAME IS NOT FOUND OR MOVES
 ---------------------------------
-(This is about the live Steam game.) The loader finds it through Steam. If it cannot, its window asks
+(This is about the live Steam game.) The loader finds it through Steam. If it cannot, "Settings" asks
 for the game folder (type it or click "Browse...") and remembers it in launcher-settings.json. If you
 later move or reinstall the game, delete launcher-settings.json and start the loader again. While Steam
 is updating the game, the loader waits for the update to finish.

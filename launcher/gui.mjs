@@ -20,7 +20,7 @@ import {
   playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY, outsideMods,
   untrusted, trustKey, confirmTrusted, programSession,
 } from './core.mjs';
-import { repairPlaces, frozenStatus, copyIn, steamDownload, isAbort } from './freeze.mjs';
+import { repairPlaces, frozenStatus, copyIn, steamDownload, isAbort, openSteamConsole } from './freeze.mjs';
 import { installMods, itemsFromPage, readChosen } from './install.mjs';
 import PAGE from './gui-page.mjs';
 
@@ -30,6 +30,11 @@ const LOG_LINES = 400;
 const BODY_MAX = 65536;
 const INSTALL_BODY_MAX = 48 * 1024 * 1024;
 const GONE_MS = 15000;
+// A mod's description as the window shows it: at most this many characters, without control or direction
+// characters (patcher/mods.mjs only requires it to be non-empty text).
+export const DESCRIPTION_MAX = 300;
+// eslint-disable-next-line no-control-regex
+export const shortText = (s, max) => { const t = String(s).replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, ' ').trim(); return t.length > max ? `${t.slice(0, max - 1)}…` : t; };
 const GONE_MS_BROWSER = 150000;
 export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   if (!await takeLock()) {
@@ -63,10 +68,13 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   const current = () => chosenGame(settings, frozenGame(places, frozen.status === 'ready'), live);
   const frozenSaves = () => !!places && existsSync(join(places.data, 'saves'));
   let { mods, broken } = scanMods(MODS);
-  // phase: ready (choose and start) | building | playing | ended (session over or dry run) ; message: the latest notice
-  // or refusal ; notice: what the last action did when it succeeded (a mod added), until the next action
+  // phase: ready (choose and start) | building | playing ; message: the latest notice or refusal ; notice: what the
+  // last action did when it succeeded (a mod added), until the next action
   // problem: the mods may not be active in the game (red); warning: a page script failed, the game runs modded (amber)
+  // lastEnd: how the last session ended ({ kind: 'ok' | 'warn' | 'bad', text }), kept until the next start or the
+  // player dismisses it (after a session the loader is ready again: Play again)
   let phase = 'ready', message = null, notice = null, problem = false, warning = false, lastSeen = Date.now(), browsing = false;
+  let lastEnd = null, consoleAt = 0;
   let wroteCopy = false; // this session wrote mods into the frozen game (launcher/core.mjs playSession)
   let running = { at: 0, value: false };
   // starting: a program is being started ; handedOff: { at, name, pid } of the last program started (core.mjs)
@@ -109,15 +117,48 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
 
   // The frozen copy's state, checked again (about a second; it only reads). An interrupted replacement is repaired
   // once, here, before the window can start anything: the lock makes this the only loader working on that folder.
+  // Marked as being checked meanwhile, so nothing starts the copy while it is read.
+  // Only the latest check's answer counts: one started earlier and ending later must not mark the copy ready while
+  // a newer one still reads it.
+  let checkSeq = 0;
   const checkFrozen = async () => {
     if (!places) return;
-    try { frozen = await frozenStatus(places); } catch (e) { frozen = { status: 'unreadable', problem: `The frozen game could not be checked (${e.code || 'unknown error'}). Click Refresh to check it again.` }; }
+    const mine = ++checkSeq;
+    frozen = { status: 'checking', problem: null };
+    let found;
+    try { found = await frozenStatus(places); } catch (e) { found = { status: 'unreadable', problem: `The frozen game could not be checked (${e.code || 'unknown error'}). Click Refresh to check it again.` }; }
+    if (mine !== checkSeq) return;
+    frozen = found;
     log(`frozen game: ${frozen.status}${frozen.problem ? ` (${frozen.problem})` : ''}`);
   };
   if (places) {
     try { await repairPlaces(places, log); } catch (e) { log(`could not tidy the frozen game's folder (${e.code || 'unknown error'})`); }
     checkFrozen();
   }
+
+  // A session is over (Play, a dry run, a program's session): the loader is ready again, the end result is kept for
+  // the window (lastEnd), and what may have changed meanwhile is read again (the mods folder, the Steam game, the
+  // programs list, the frozen copy, whose own files the session put back).
+  // (a program's hand-off is over too: its session waited for it to exit; the window-gone timer is left as it is,
+  // so a window closed during the session still ends the loader at once)
+  const endSession = (kind, text) => {
+    phase = 'ready'; message = null; notice = null; wroteCopy = false; handedOff = null;
+    lastEnd = text ? { kind, text } : null;
+    try { live = findGame(settings.gameDir || null); } catch (e) { log(`could not look for the Steam game again after the session: ${e?.message || e}`); }
+    try { ({ mods, broken } = scanMods(MODS)); } catch (e) {
+      // (never the previous list: a mod removed meanwhile must not play from memory)
+      mods = []; broken = [];
+      log(`could not read the mods folder again after the session: ${e?.message || e}`);
+      message = 'The mods folder could not be read again. Click Refresh.';
+    }
+    try { freshPrograms(); problems.clear(); } catch (e) { log(`could not read the programs again after the session: ${e?.message || e}`); }
+    checkFrozen();
+  };
+  const endKind = () => (problem ? 'bad' : warning ? 'warn' : 'ok');
+  // Why the frozen game cannot start now: being checked, or could not be read (often: the game runs; getting it
+  // again would not help), or it must be got.
+  const frozenRefusal = () => (frozen.status === 'checking' ? 'The frozen game is being checked: try again in a moment.'
+    : frozen.status === 'unreadable' ? frozen.problem : FROZEN_NOT_READY);
 
   const state = () => {
     const game = current();
@@ -130,6 +171,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       play: playChoice(settings),
       pin: { build: PIN.build, version: PIN.version },
       frozen: { ...frozen, dir: places?.game ?? null, savesCopied: frozenSaves() },
+      lastEnd,
       task: task && { kind: task.kind, step: task.step, done: task.done, total: task.total, mb: task.mb ?? null, command: task.command ?? null, clipboard: task.clipboard ?? null },
       live: live && { dir: live.dir, build: live.build, updating: live.updating, targetBuild: live.targetBuild },
       game: game && { dir: game.dir, build: game.build, updating: game.updating, targetBuild: game.targetBuild, frozen: !!game.frozen, ready: game.frozen ? game.ready : true },
@@ -137,7 +179,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
       gameRunning: phase === 'playing' ? true : gameIsRunning(),
       modsFolder: MODS,
       mods: mods.map(m => ({
-        id: m.id, name: m.name, version: m.version, author: m.author || null, requires: m.requires || [],
+        id: m.id, name: m.name, version: m.version, author: m.author || null, description: shortText(m.description, DESCRIPTION_MAX), requires: m.requires || [],
         builds: m.builds, changes: changeGroups(m), scripts: m.scripts.length, wording: m.patches.some(p => p.bundle === PAGE_BUNDLE), outside: outside.has(m.id), trusted: !untrusted(settings, [m]).length, trustKey: trustKey(m),
         fits: !!game && m.builds.includes(game.build), enabled: isEnabled(settings, m),
       })),
@@ -206,7 +248,7 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
     if (task) return 'Wait until the frozen game is set up, or cancel it.';
     const game = current();
     if (!game) return 'Choose the game folder first.';
-    if (game.frozen && !game.ready) return frozen.status === 'checking' ? 'The frozen game is being checked: try again in a moment.' : FROZEN_NOT_READY;
+    if (game.frozen && !game.ready) return frozenRefusal();
     if (!steam) return 'Steam was not found on this PC. The game needs Steam.';
     const { chosen, error } = chooseMods(mods, settings, game, broken);
     if (error) return error;
@@ -238,8 +280,8 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
           if (ready.error) { phase = 'ready'; message = ready.error; checkFrozen(); return; }
           frozenDir = ready.dir;
         }
-        if (dryRun) { log('dry run: everything checks out; the game was not started'); phase = 'ended'; message = 'Dry run: the mods were built and checked. The game was not started.'; return; }
-        phase = 'playing'; wroteCopy = built.disk.size > 0; message = game.frozen ? 'Starting the frozen game…' : 'Starting the game through Steam…';
+        if (dryRun) { log('dry run: everything checks out; the game was not started'); endSession('ok', 'Dry run: the mods were built and checked. The game was not started.'); return; }
+        phase = 'playing'; lastEnd = null; wroteCopy = built.disk.size > 0; message = game.frozen ? 'Starting the frozen game…' : 'Starting the game through Steam…';
         // A worker that does not take the mods is shown at once (problem), not only when the game closes.
         // Page scripts: a throw stays a warning for the session; "did not run" lasts until a later page load runs them.
         // Wording changes not active: a warning until a later page load has them (broken: a problem, as for a worker).
@@ -257,12 +299,13 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
           steam, frozen: frozenDir ? { dir: frozenDir, dataDir: game.dataDir, notes: game.notes } : null, disk: built.disk,
           port, payloads: built.payloads, scripts: built.scripts, chosen, log, onSwap,
         });
-        phase = 'ended'; problem = end.problem; warning = end.warning; message = end.message;
-        if (game.frozen) checkFrozen(); // its own files were put back (or not: then it says so)
+        problem = end.problem; warning = end.warning;
+        endSession(endKind(), end.message); // (the frozen game is checked again: its own files were put back, or it says why not)
       } catch (e) {
         log(`error: ${e?.stack || e}`);
-        problem = true; message = 'Something went wrong (see the log). If the game opened, it may be running WITHOUT the mods: close it.';
-        phase = phase === 'building' ? 'ready' : 'ended';
+        problem = true;
+        const text = 'Something went wrong (see the log). If the game opened, it may be running WITHOUT the mods: close it.';
+        if (phase === 'building') { phase = 'ready'; message = text; } else endSession('bad', text);
       }
     }, 50);
     return null;
@@ -299,7 +342,8 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
   const refuseProgram = (p, confirmed) => {
     const game = current();
     const refusal = programRefusal(p, { confirmed, dryRun, game, mods, broken, settings, saved: readSettings().enabled });
-    if (refusal) return refusal;
+    // (a frozen game that is not ready: being checked, or unreadable, says so instead of "get it")
+    if (refusal) return refusal === FROZEN_NOT_READY ? frozenRefusal() : refusal;
     const name = programName(p);
     const blocker = programBusy() || (task ? 'Wait until the frozen game is set up, or cancel it.' : null) || launchBlocker(settings, game);
     if (blocker) return blocker;
@@ -446,6 +490,18 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
         if (task) task.abort.abort();
         return reply();
       }
+      case 'POST /api/steam-console': {
+        // (only while the loader waits for the player to paste the download command: the console may have been closed)
+        if (!task || task.kind !== 'download with Steam' || task.step !== 'waiting' || !steam) return reply('Steam’s console is opened only while the loader waits for the download.');
+        if (Date.now() - consoleAt < 2000) return reply(); // (a double click opens it once)
+        consoleAt = Date.now();
+        openSteamConsole(steam, log);
+        return reply();
+      }
+      case 'POST /api/dismiss': {
+        lastEnd = null;
+        return reply();
+      }
       case 'POST /api/install': {
         const e = add(() => itemsFromPage(body), 'what was dropped');
         return e ? reply(e) : done(true);
@@ -556,17 +612,18 @@ export async function runGui({ dryRun, port, gameDirArg, noWindow }) {
           return reply(`${name} could not be started: ${started.error}`);
         }
         if (session) {
-          phase = 'playing'; wroteCopy = true;
+          phase = 'playing'; wroteCopy = true; lastEnd = null;
           message = `${name} plays the frozen game. The mods that change the simulation stay written into it until ${name} and the game have closed.`;
           handedOff = { at: Date.now(), name, pid: started.pid };
           log(`started ${name} (${p.exe} ${programArgs(BASE, gameDir, [...built.disk.keys()])}); it starts the frozen game itself, with the mods switched on here`);
-          session.then(end => { problem = end.problem; message = end.message; }, e => {
+          session.then(end => { problem = end.problem; endSession(endKind(), end.message); }, e => {
             log(`error: ${e?.stack || e}`);
-            problem = true; message = 'Something went wrong (see the log). The frozen game\'s own files are put back the next time the loader opens.';
-          }).finally(() => { phase = 'ended'; checkFrozen(); });
+            problem = true;
+            endSession('bad', 'Something went wrong (see the log). The frozen game\'s own files are put back once the game has closed (Refresh checks again).');
+          });
           return reply();
         }
-        handedOff = { at: Date.now(), name, pid: started.pid };
+        handedOff = { at: Date.now(), name, pid: started.pid }; lastEnd = null;
         log(`started ${name} (${p.exe} ${programArgs(BASE, gameDir)}); it starts the ${gameDir ? 'frozen ' : ''}game itself, with the mods switched on here`);
         notice = `Started ${name}. It starts the ${gameDir ? 'frozen ' : ''}game itself, with the mods switched on here: follow its own window. You can close this one.`;
         return done(true);
@@ -635,7 +692,7 @@ function openWindow(url, log, onBrowser) {
 
 function openDefault(url, log) {
   spawn('cmd', ['/c', 'start', '""', url], { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true })
-    .on('error', e => log(`the launcher window could not be opened (${e.message}). Open this address in a browser: ${url}`))
+    .on('error', e => log(`the launcher window could not be opened (${e.message}); open the loader again`))
     .unref();
   log('opened the launcher in the default browser');
 }

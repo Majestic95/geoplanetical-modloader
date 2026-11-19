@@ -14,22 +14,25 @@ Not affiliated with the developers of Geoplanetical.
 1. Download the packaged loader, `GeoplaneticalModLoader-<version>.zip`, from the
    [latest release](https://github.com/Majestic95/geoplanetical-modloader/releases/latest) and unzip it anywhere, or
    build it from source (below).
-2. Run `GeoplaneticalModLoader.exe` and drop each mod's zip (or folder) onto its window, or click **Add mod...**.
-   The loader checks the mod, adds it to its `mods` folder and replaces an older version of the same mod.
-3. The first time, set up the **frozen game**: the loader's own copy of the game version its mods are made for, which
-   Steam updates do not change (about 4.1 GB). Copy it from your Steam game while that is the same version, or
-   download that version with Steam: the loader opens Steam's console and copies the one command to paste. You can
-   also choose the live Steam game instead.
-4. Switch mods on or off and click **Play with mods**.
-5. To play the same mods through another program, such as a multiplayer launcher, click **Add program...** once and
-   choose its `.exe`; its **Play with** button then starts it with the mods switched on in the loader.
+2. Run `GeoplaneticalModLoader.exe`. The first time, it offers to set up the **frozen game**: the loader's own copy
+   of the game version its mods are made for, which Steam updates do not change (about 4.1 GB). It asks first, then
+   opens Steam's console and copies the one command to paste there; Steam downloads that version from your own
+   account, and the loader takes it from there. If your Steam game is already that version, or you have a copy of it
+   in a folder, the loader copies that instead.
+3. Download each mod's `.zip` from its author's page and drop it onto the loader's window (no need to unzip it), or
+   click **Add mods...**. The loader checks the mod, adds it to its `mods` folder and replaces an older version of
+   the same mod.
+4. Switch mods on or off and click **Play**. When the game closes, the loader is ready again: **Play again**.
+5. To play the same mods through another program, such as a multiplayer launcher, open **Settings**, click **Add
+   program...** once and choose its `.exe`; its **Play with** button beside **Play** then starts it with the mods
+   switched on in the loader. **Settings** is also where you choose the live Steam game instead of the frozen one.
 
 The included `README.txt` covers saves, updates and what to do when something goes wrong.
 
 - **Windows and Steam only.** Your copy of the game comes from your own Steam account. The loader starts the frozen
   game from its folder, with Steam running and signed in, or the live game through Steam.
-- **Play with mods is single player.** A modded game's simulation differs from an unmodded one, so it cannot join
-  unmodded multiplayer sessions. A separate multiplayer program added under **Programs** can play the mods with
+- **Playing with mods is single player.** A modded game's simulation differs from an unmodded one, so it cannot join
+  unmodded multiplayer sessions. A separate multiplayer program added under **Settings**, **Programs** can play the mods with
   others who use the same ones.
 - **Saves:** a save made with mods needs the same mods to load correctly. The frozen game keeps its own saves (your
   Steam saves are copied into it the first time you play it); Steam Cloud does not back them up.

@@ -7,7 +7,7 @@ import { findGame, gameRunning, steamExe, steamPath } from '../patcher/game.mjs'
 import { PIN, frozenPlaces } from '../patcher/frozen.mjs';
 import {
   VERSION, PRODUCT, MODS, makeLog, readSettings, saveSettings, isEnabled, chooseMods, launchBlocker, buildMods, playSession,
-  playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY, outsideMods,
+  playChoice, frozenGame, chosenGame, prepareFrozen, noModsMessage, takeLock, FROZEN_NOT_READY, FROZEN_WHERE, outsideMods,
   untrusted, trust, TRUST_TEXT, plain,
 } from './core.mjs';
 import { repairPlaces, frozenStatus, copyIn, steamDownload } from './freeze.mjs';
@@ -86,7 +86,7 @@ export async function runConsole({ dryRun, port, gameDirArg }) {
       console.log(`\n${noModsMessage(mods, settings, game)}`);
       continue;
     }
-    if (game.frozen && !game.ready) { console.log(`\n${FROZEN_NOT_READY.replace('(Frozen game, above)', '(G then Enter)')}`); continue; }
+    if (game.frozen && !game.ready) { console.log(`\n${FROZEN_NOT_READY.replace(FROZEN_WHERE, '(G then Enter)')}`); continue; }
     const blocker = launchBlocker(settings, game);
     if (blocker) { console.log(`\n${blocker}`); continue; }
     while (gameRunning()) {
@@ -105,12 +105,12 @@ export async function runConsole({ dryRun, port, gameDirArg }) {
       log(`confirmed by the player: ${asks.map(m => `${m.name} ${m.version}`).join(', ')} run with the same access to the PC as any program`);
     }
     const built = buildMods(game, chosen, log);
-    if (built.error) { console.log(built.error.replace('(Frozen game, above)', '(G then Enter)')); continue; }
+    if (built.error) { console.log(built.error.replace(FROZEN_WHERE, '(G then Enter)')); continue; }
     let frozenDir = null;
     if (game.frozen) {
       // (a dry run checks the copy, not Steam, and copies no saves) The check is the last step before the start.
       const ready = await prepareFrozen(game, log, dryRun ? { saves: false, steam: false } : {});
-      if (ready.error) { console.log(`\n${ready.error.replace('(Frozen game, above)', '(G then Enter)')}`); await checkFrozen(); continue; }
+      if (ready.error) { console.log(`\n${ready.error.replace(FROZEN_WHERE, '(G then Enter)')}`); await checkFrozen(); continue; }
       frozenDir = ready.dir;
     }
     if (dryRun) { log('dry run: everything checks out; the game was not started'); rl.close(); return; }

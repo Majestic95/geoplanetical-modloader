@@ -73,7 +73,7 @@ A mod with only a page script (format 2):
 | `id` | yes | Text (in quotes) of lower-case letters, digits and `-`, starting with a letter or digit, at most 64 characters. Unique among installed mods. A number such as `123`, or `null` or `true`, is not an id. |
 | `name` | yes | Shown to players. |
 | `version` | yes | Shown to players. Any non-empty text; [semantic versioning](https://semver.org) is recommended. |
-| `description` | yes | Non-empty text. |
+| `description` | yes | Non-empty text. Shown to players under the mod's name in the loader's window (up to 300 characters; control and direction characters shown as spaces): a sentence or two on what the mod does. |
 | `builds` | yes | The Steam build ids of the game this mod is made for, as strings of digits. The loader only applies a mod (its patches and its page scripts) to a game whose build is listed: its frozen game's build, or the live Steam game's (see below). |
 | `patches` | yes, unless the mod has `scripts` | Non-empty list of patch file paths, relative to the mod folder. Applied in this order. A format-2 mod with `scripts` may leave it out. |
 | `scripts` | no (format 2) | Non-empty list of at most 20 page script paths, relative to the mod folder, each listed once: `.js` files run in the game's window, in this order. A path is made of letters, digits, `_`, `.` and `-`, with `/` between folders, and each folder and file name starts with a letter, digit or `_` (`page/labels.js`). See [Page scripts](#page-scripts). A mod that uses it declares `"format": 2`. |

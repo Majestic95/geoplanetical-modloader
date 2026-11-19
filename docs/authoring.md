@@ -134,7 +134,7 @@ Test at least: a new game, a few months of play, save, quit, and load the save a
 ## 7. Release
 
 Zip your mod folder (`my-mod/` with `mod.json`, its patch files and page scripts). Players drop the zip onto the loader's
-window (or choose it with **Add mod...**), and the loader checks the mod and adds it; unzipping it into the `mods`
+window (or choose it with **Add mods...**), and the loader checks the mod and adds it; unzipping it into the `mods`
 folder by hand also works. Do not include extracted game files: a mod carries only the short pieces of game code in
 its `find` and `anchor` text.
 
@@ -189,9 +189,9 @@ mod as not made for that game version until you port it:
 ## Programs
 
 A **program** is a separate application that starts the game with the loader's mods, such as a multiplayer launcher.
-It is not a mod and is not installed into the `mods` folder: the player adds it in the loader's window with **Add
+It is not a mod and is not installed into the `mods` folder: the player adds it in the loader's **Settings** with **Add
 program...** (choosing its `.exe` file where they unzipped it), and the window then shows a **Play with** button
-named after it. The loader contains no code for any particular program; everything a program gets from the loader
+named after it, beside **Play**. The loader contains no code for any particular program; everything a program gets from the loader
 is listed here.
 
 **How the loader starts it.** As

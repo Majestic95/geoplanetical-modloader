@@ -12,7 +12,7 @@ import {
 } from '../patcher/frozen.mjs';
 import { readAsarFile } from '../patcher/game.mjs';
 import { repairPlaces, frozenStatus, copyIn, install, readDownloadLog, takeDownload, steamDownload, downloadCommand, downloadFolder } from './freeze.mjs';
-import { playChoice, frozenGame, chosenGame, launchBlocker, programRefusal, programArgs, noModsMessage, FROZEN_NOT_READY } from './core.mjs';
+import { playChoice, frozenGame, chosenGame, launchBlocker, programRefusal, programArgs, noModsMessage, FROZEN_NOT_READY, FROZEN_WHERE } from './core.mjs';
 
 let failed = 0;
 async function expect(name, fn, check) {
@@ -295,6 +295,8 @@ try {
   await expect('programs: refused while the frozen game is not set up', () => programRefusal({ exe, confirmed: exe }, {
     game: fg, mods: [], settings: { enabled: {} }, saved: {},
   }), r => r === FROZEN_NOT_READY);
+  await expect('the window names where to get the frozen game; the text menu swaps in its key', () => [FROZEN_NOT_READY, FROZEN_NOT_READY.replace(FROZEN_WHERE, '(G then Enter)')],
+    r => r[0].includes('(Settings, then Get it)') && r[1].includes('(G then Enter)') && !r[1].includes('Settings'));
   await expect('programs: the frozen game\'s folder is passed as --game', () => [programArgs('C:\\Loader'), programArgs('C:\\Loader', 'C:\\Users\\A B\\game')],
     r => r[0] === '--loader C:\\Loader' && r[1] === '--loader C:\\Loader --game "C:\\Users\\A B\\game"');
 } finally {
