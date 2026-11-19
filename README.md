@@ -17,7 +17,7 @@ Not affiliated with the developers of Geoplanetical.
 2. Run `GeoplaneticalModLoader.exe` and drop each mod's zip (or folder) onto its window, or click **Add mod...**.
    The loader checks the mod, adds it to its `mods` folder and replaces an older version of the same mod.
 3. The first time, set up the **frozen game**: the loader's own copy of the game version its mods are made for, which
-   Steam updates do not change (about 3.9 GB). Copy it from your Steam game while that is the same version, or
+   Steam updates do not change (about 4.1 GB). Copy it from your Steam game while that is the same version, or
    download that version with Steam: the loader opens Steam's console and copies the one command to paste. You can
    also choose the live Steam game instead.
 4. Switch mods on or off and click **Play with mods**.

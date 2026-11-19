@@ -30,7 +30,7 @@ async function expect(name, fn, check) {
 const sha = b => createHash('sha256').update(b).digest('hex');
 const yes = () => true, no = () => false;
 const SIM = 'sim-worker.bundle.js', PAGEW = 'page-worker.bundle.js';
-// A bundle shaped like the game's: it installs its message handler (the 1.1.0 simulation does so after an await).
+// A bundle shaped like the game's: it installs its message handler after an await (the simulation from game 1.1.0 on).
 const SIM_TEXT = '/*geo-channel:release*/\n(async () => { await null; globalThis.onmessage = e => e; })();\n';
 const PAGE_TEXT = 'globalThis.onmessage = e => e;\n';
 

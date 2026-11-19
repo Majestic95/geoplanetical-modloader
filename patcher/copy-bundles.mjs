@@ -121,8 +121,9 @@ export const newNonce = () => randomBytes(16).toString('hex');
 // The text written for `bundle`: its patched text between the two notes (the patched text itself is unchanged, byte
 // for byte). `file`: the loader's notes file; `nonce`: this session's.
 // The prelude also leaves an "exit" note if the thread the bundle runs in ends by itself with an error code: an error
-// the code threw later (the 1.1.0 simulation finishes starting after an await). The game ends these threads only from
-// outside (Worker.terminate, or its whole process closing), which runs no exit handler. The listener only appends.
+// the code threw later (from game 1.1.0 on, the simulation finishes starting after an await). The game ends these
+// threads only from outside (Worker.terminate, or its whole process closing), which runs no exit handler. The
+// listener only appends.
 export function noteWrap(text, { file, nonce, bundle }) {
   const line = at => JSON.stringify(`${JSON.stringify({ gpml: nonce, bundle, at })}\n`);
   const f = JSON.stringify(file);

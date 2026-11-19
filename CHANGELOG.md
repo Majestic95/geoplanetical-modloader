@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0 (not released yet)
+
+- **The frozen game moves to game 1.1.5 (build `26734764`), the version with Mars.** It replaces 1.1.0 (`26519199`):
+  the window shows the copy as an older version until the new one is in place, by the same three ways as before (copy
+  from the Steam game while it is that build, download it with Steam, or copy a folder); the new copy replaces the old
+  once it checks. It is about 4.1 GB; free space needed: about 5 GB, and to download it with Steam about 4 GB more on
+  Steam's drive (about 9 GB if they share a drive; the player README now says so). Saves stay where they are. Mods need
+  porting to the new build (their `builds`). The game keeps the same layout as 1.1.0 (the same four bundles beside its
+  archive, loaded the same way), so nothing else changes in the loader.
+
 ## 0.8.0 (2026-11-10)
 
 - **The frozen game moves to game 1.1.0 (build `26519199`).** It replaces 1.0.8 (`26403824`): the window shows the

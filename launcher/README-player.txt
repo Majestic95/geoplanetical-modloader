@@ -9,7 +9,8 @@ Single player only.
 WHAT YOU NEED
 -------------
 - Windows, Steam, and Geoplanetical bought on Steam.
-- About 4 GB of free space for the frozen game (below).
+- About 5 GB of free space for the frozen game (below). To download it with Steam, about 4 GB more on Steam's
+  drive (so about 9 GB if Steam and the loader share a drive); Steam's download is removed once copied.
 
 
 THE FROZEN GAME

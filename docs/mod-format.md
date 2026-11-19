@@ -83,8 +83,8 @@ A mod with only a page script (format 2):
 | `changes` | no | The changelog the launcher shows. Each entry is a sentence, or `{ "group": "Heading", "items": [sentences] }`. |
 
 Which build: each loader release plays one **frozen** build of the game from the player's own copy of it, kept outside
-the Steam library so that Steam updates do not change it (loaders 0.6.0 and 0.7.0: build `26403824`, game 1.0.8; the
-next loader release: build `26519199`, game 1.1.0). The loader
+the Steam library so that Steam updates do not change it (loaders 0.6.0 and 0.7.0: build `26403824`, game 1.0.8;
+loader 0.8.0: build `26519199`, game 1.1.0; the next loader release: build `26734764`, game 1.1.5). The loader
 shows it in its window. Make your mod for that build and list it in `builds`. The player can also choose the live
 Steam game, whose build is in `steamapps/appmanifest_940230.acf` (`"buildid"`); a mod plays on it only when that
 build is listed too. A Steam update therefore no longer stops a mod: the mod is ported (see
@@ -282,15 +282,16 @@ they run outside the simulation, and timers and page state are what they are for
 
 The format is the same for every bundle; where the patched code runs depends on the game version.
 
-- **In the game's window:** `app.bundle.js` and the workers the page starts (in game 1.1.0, `city-lights-worker.bundle.js`;
-  up to game 1.0.8, every worker, the simulation included). The loader serves the patched code through the game's
-  debugging port, in memory, and checks in each worker that the patched code is the one answering.
+- **In the game's window:** `app.bundle.js` and the workers the page starts (from game 1.1.0 on,
+  `city-lights-worker.bundle.js`; up to game 1.0.8, every worker, the simulation included). The loader serves the
+  patched code through the game's debugging port, in memory, and checks in each worker that the patched code is the
+  one answering.
 - **Outside the game's window:** from game 1.0.9 on, the game keeps the simulation and its helper workers
   (`simulation-worker.bundle.js`, `world-market-worker.bundle.js`, `war-theatre-worker.bundle.js`,
-  `save-codec-worker.bundle.js` in game 1.1.0) beside its archive, in `resources\app.asar.unpacked`, and runs them in a
-  Node process of its own. The loader finds them by the archive's index, not by name. It writes the patched code into
-  its frozen game's folder just before the game starts and puts the original back once the game has closed; it never
-  writes the Steam game's files. So:
+  `save-codec-worker.bundle.js` in games 1.1.0 and 1.1.5) beside its archive, in `resources\app.asar.unpacked`, and
+  runs them in a Node process of its own. The loader finds them by the archive's index, not by name. It writes the
+  patched code into its frozen game's folder just before the game starts and puts the original back once the game has
+  closed; it never writes the Steam game's files. So:
   - a patch to such a bundle plays only in the frozen game; on the live Steam game the loader refuses the mod at Play,
     with a message saying so;
   - the code runs with Node's access to the player's PC (`require`, files, other programs), like any program. The loader
@@ -304,9 +305,9 @@ The format is the same for every bundle; where the patched code runs depends on 
   - the patched text is built exactly as for the window (the same edits, the same marker); the loader adds one short
     line before and after it that appends a note to its own folder when Node loads the file. A bundle that left no note
     did not start in that session (the save codec, for example, starts with the first save). One that started but never
-    finished loading threw while loading, and one whose thread ended with an error later (the 1.1.0 simulation finishes
-    starting after an `await`) stopped while the game ran; the window then shows a red warning. Since the file is the
-    loader's, the game's own code cannot answer in its place.
+    finished loading threw while loading, and one whose thread ended with an error later (from game 1.1.0 on, the
+    simulation finishes starting after an `await`) stopped while the game ran; the window then shows a red warning.
+    Since the file is the loader's, the game's own code cannot answer in its place.
 
 ## Determinism
 

@@ -133,7 +133,7 @@ export async function runConsole({ dryRun, port, gameDirArg }) {
     try { running = gameRunning(); } catch { console.log('Could not tell whether Geoplanetical is running. Close it if it is, then try again.'); return; }
     if (running) { console.log('Geoplanetical is running. Close it first: the frozen game may be in use.'); return; }
     const fits = live && live.build === PIN.build && !live.updating;
-    console.log(`\nGet the frozen game: your own copy of game ${PIN.version} (build ${PIN.build}), about 3.9 GB.`);
+    console.log(`\nGet the frozen game: your own copy of game ${PIN.version} (build ${PIN.build}), about 4.1 GB.`);
     console.log(`  1. Copy from your Steam game${fits ? '' : ` (not possible now: it is build ${live?.build ?? 'not found'})`}`);
     console.log('  2. Download with Steam (you paste one command into Steam\'s console)');
     console.log('  3. Copy from a folder that holds that build');

@@ -27,26 +27,26 @@ import { APP_ID } from './game.mjs';
 
 // The build this loader release plays. Moving it is a release decision: mods add the new build to `builds`.
 export const PIN = Object.freeze({
-  build: '26519199',
-  version: '1.1.0',
+  build: '26734764',
+  version: '1.1.5',
   depot: '940231',
-  manifest: '7115452977362333310',
+  manifest: '6518859217795271965',
   // resources\app.asar: its size, the SHA-256 of its JSON index (the bytes after the 16-byte header, as long as its
   // offset 12 says), and the SHA-256 of the whole file
-  asarSize: 3595466666,
-  asarIndexSha256: '6ae538594f745a6140b5cff9f5946278f2c2e4347d02bc1af67972c3d9a1f46d',
-  asarSha256: '961553dea82db409991cfb299364189966d3e3b080e9e0ca4e392de591b6a215',
-  // every file outside resources\app.asar (111 files, resources\app.asar.unpacked included): their total size, and
+  asarSize: 3887156108,
+  asarIndexSha256: 'fe485532947956a4e5ffc19a49725b04658c9343c5fc5439573eac1f4b7558ef',
+  asarSha256: '5925618492cf1d57d4ff245dd7caa74fde663940e68eefe89a1f4e113b57d147',
+  // every file outside resources\app.asar (112 files, resources\app.asar.unpacked included): their total size, and
   // folderSha256
-  folderBytes: 495135922,
-  folderSha256: '6d72a2ac39ab1426f538189a892865cc32fce7af1cb4629a380f9007aa1de872',
+  folderBytes: 499146234,
+  folderSha256: 'cead533ce8369cafe2c1ba8fb9c8065ff4113198f933c719bb5d8a53c02d49a5',
 });
 
 export const GAME_EXE = 'Geoplanetical.exe';
 const ASAR = join('resources', 'app.asar');
 // (an archive index larger than this is not a game's: refused before the read, as a picked folder could name any size)
 const MAX_INDEX = 64 * 1024 * 1024;
-// (the pinned build has 111 files and a few dozen folders outside the archive; a folder with far more is not a game's)
+// (the pinned build has 112 files and a few dozen folders outside the archive; a folder with far more is not a game's)
 export const MAX_ENTRIES = 5000;
 // Chromium may write a debug.log beside the exe; it is not part of the build.
 const SKIP = new Set(['resources/app.asar', 'debug.log']);

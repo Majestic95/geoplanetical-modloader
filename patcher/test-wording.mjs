@@ -51,6 +51,13 @@ expect('a key that only starts like menu.quit is not held', () => build({ find: 
 expect('a key that only starts like a held one is not held', () => build({ find: 'Fine', replace: 'Good', anchor: 'savesish' }), { check: r => r.report[0].entry === 'savesish' });
 expect('an edit that changes nothing passes', () => build({ find: 'saves-retry', replace: 'saves-retry' }), { check: r => r.report.length === 1 });
 expect('a tag may be taken out', () => build({ find: 'has <b>a</b> tag', replace: 'has a tag', anchor: 'k.tag' }), { check: r => body(r).includes('"k.tag":"has a tag"') });
+// Game 1.1.5 names its tables `td={fr:Bge,en:$ge}`: a table name may start with "$".
+const GAME_DOLLAR = GAME.split('I4A').join('Bge').split('D4A').join('$ge');
+const buildDollar = (...edits) => buildBundle(GAME_DOLLAR, [mod(...edits)], opts);
+expect('tables named with a "$" are found and read', () => buildDollar({ find: 'Old one', replace: 'New wording' }),
+  { check: r => r.report[0].entry === 'k.one' && runInNewContext(`var Vt=f=>f();${body(r)};Ws`).en['k.one'] === 'New wording' });
+expect('held entries stay held in tables named with a "$"', () => buildDollar({ find: '"Delete"', replace: '"Back up"', anchor: 'saves.act.delete' }),
+  { throws: /cannot be changed/ });
 
 // Refused: not wording.
 expect('a string in the code (an id)', () => build({ find: 'saves-retry', replace: 'other', anchor: 'Ws={' }), { throws: REFUSED });

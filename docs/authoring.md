@@ -208,8 +208,8 @@ itself:
 
 - Without `--game`, the player chose the live Steam game: start it through Steam (`steam -applaunch 940230`).
 - With `--game`, the player chose the loader's frozen game: a folder holding one build of the game, outside the
-  Steam library (loaders 0.6.0 and 0.7.0: build `26403824`; the next release: `26519199`). The loader checked it just
-  before (its `resources\app.asar` index
+  Steam library (loaders 0.6.0 and 0.7.0: build `26403824`; loader 0.8.0: `26519199`; the next release:
+  `26734764`). The loader checked it just before (its `resources\app.asar` index
   and every file outside the archive match that build), but check it again yourself before you start anything in it,
   and refuse a folder that is not a build you support. Start its `Geoplanetical.exe` directly, with Steam running
   and `SteamAppId` and `SteamGameId` set to `940230` in its environment (the game then does not hand itself back to

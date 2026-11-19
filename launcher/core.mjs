@@ -20,7 +20,7 @@ import { PIN, checkFolder, checkProblem, copySavesOnce, steamRunning, errorCode 
 import { PAGE, PAGE_BUNDLE } from '../patcher/session.mjs';
 import { settleCopy, writeBundles, restoreBundles, noteWrap, readNotes, noteJudge, newNonce } from '../patcher/copy-bundles.mjs';
 
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.0';
 export const PRODUCT = 'Geoplanetical Mod Loader';
 // Packaged: everything sits beside the executable. Development: the repository root (mods/ is the repo's).
 export const BASE = isSea() ? dirname(process.execPath) : join(dirname(fileURLToPath(import.meta.url)), '..');

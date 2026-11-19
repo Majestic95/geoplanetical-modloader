@@ -206,7 +206,7 @@ export default String.raw`<!doctype html>
     fsc.textContent = t ? 'Setting up\u2026' : fLabel;
     $('frozen-path').textContent = f.status === 'ready' ? (f.dir || '') : '';
     var fnote = f.status === 'missing'
-      ? 'The frozen game is your own copy of game ' + s.pin.version + ', kept by the loader so that a Steam update never stops the mods. Get it once, in one of these ways (about 3.9 GB):'
+      ? 'The frozen game is your own copy of game ' + s.pin.version + ', kept by the loader so that a Steam update never stops the mods. Get it once, in one of these ways (about 4.1 GB):'
       : f.status === 'ready' || f.status === 'checking' ? '' : (f.problem || '');
     $('frozen-note').textContent = [fnote, f.status === 'ready' ? running : '', noSteam].filter(Boolean).join(' ');
     // (also when it is ready: getting it again replaces it, should it ever be damaged)
